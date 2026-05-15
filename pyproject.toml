@@ -1,0 +1,113 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hdd-firmware-toolkit"
+version = "0.1.0"
+description = "HDD/SSD firmware hacking toolkit: parse, patch, dump, recover, and analyze firmware"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Darío Clavijo", email = "clavijodario@gmail.com" },
+]
+keywords = [
+    "firmware", "hard-drive", "ssd", "ata", "nvme", "wd", "seagate",
+    "samsung", "toshiba", "jtagu", "openocd", "data-recovery",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Hardware",
+    "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/daedalus/hdd_firmware_toolkit"
+Repository = "https://github.com/daedalus/hdd_firmware_toolkit"
+Documentation = "https://github.com/daedalus/hdd_firmware_toolkit#readme"
+
+[project.optional-dependencies]
+serial = ["pyserial"]
+asm = ["keystone-engine"]
+disasm = ["capstone"]
+yaml = ["PyYAML"]
+all = [
+    "pyserial",
+    "keystone-engine",
+    "capstone",
+    "PyYAML",
+]
+
+[project.scripts]
+hdd-firmware-toolkit = "hdd_firmware_toolkit.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hdd_firmware_toolkit"]
+
+[tool.hatch.version]
+path = "src/hdd_firmware_toolkit/_version.py"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "W",    # pycodestyle warnings
+    "UP",   # pyupgrade
+    "YTT",  # flake8-2020
+    "COM",  # flake8-commas
+    "T20",  # flake8-print (print-related)
+    "RUF",  # ruff-specific
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+]
+ignore = [
+    "E501",   # line length (handled by formatter)
+    "E402",   # module-level import not at top
+    "F403",   # wildcard imports
+    "F405",   # undefined from wildcard
+    "N999",   # underscore in module name
+    "COM812", # trailing comma missing
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/hdd_firmware_toolkit/cli/*" = ["T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = [
+    "src/hdd_firmware_toolkit/_monolith.py",
+]
+
+[tool.coverage.run]
+source = ["src/hdd_firmware_toolkit"]
+omit = ["src/hdd_firmware_toolkit/_monolith.py"]

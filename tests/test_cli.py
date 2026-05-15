@@ -1,0 +1,65 @@
+from hdd_firmware_toolkit.cli.handlers import build_parser
+
+
+def test_parser_created():
+    parser = build_parser()
+    assert parser is not None
+    assert parser.prog == "hdd_firmware_toolkit"
+
+
+def test_parser_has_all_commands():
+    parser = build_parser()
+    seen = set(parser._subparsers._group_actions[0].choices.keys())
+    expected = {
+        "parse-firmware", "decode-samsung", "scan-strings", "scan-fptables",
+        "diff", "list-vscs", "read-ram", "write-ram",
+        "hot-patch", "benchmark", "dump-overlay", "dump-all-overlays",
+        "jtag-shell", "jtag-dump", "jtag-bp", "jtag-regs",
+        "samsung-memory-map", "samsung-fw-history",
+        "samsung-gpio", "samsung-ncq", "samsung-aes-info",
+        "samsung-dma-dump", "samsung-ftl-preload",
+        "samsung-safe-shell", "samsung-safe-read", "samsung-safe-write",
+        "parse-seagate",
+        "sa-probe", "sa-dump", "sa-hide", "sa-extract",
+        "fwexploit-send", "fwexploit-activate",
+        "nvme-bridge-sanitize", "patch-template",
+        "toshiba-parse", "toshiba-nand",
+        "sat-cdb", "patcher-apply", "patcher-fix",
+        "ata-sec-status",
+        "nvme-identify", "nvme-smart", "nvme-fw-download",
+        "nvme-fw-activate", "nvme-vendor",
+        "nvme-live-identify", "nvme-live-smart", "nvme-live-get-log",
+        "nvme-live-fw-log", "nvme-live-send",
+        "usb-identify", "usb-list",
+        "dr-smart", "dr-identify", "dr-native-max", "dr-pattern",
+        "hpa-detect", "hpa-build-cmd", "hpa-parse-dco",
+        "nvme-timing-baseline", "nvme-timing-detect", "nvme-timing-gc",
+        "envme-dma", "envme-scan", "envme-compat",
+        "nvmeof-check-kernel", "nvmeof-build-icreq", "nvmeof-poc",
+        "fwdetect-current", "fwdetect-timing",
+        "fwdetect-verify", "fwdetect-report",
+        "sandisk-id", "sandisk-sniff-logs", "sandisk-build-log",
+        "sandisk-build-vu", "sandisk-build-purge", "sandisk-build-resize",
+        "sandisk-parse-c0", "sandisk-parse-ca", "sandisk-parse-d0",
+        "sandisk-live-sniff",
+    }
+    missing = expected - seen
+    extra = seen - expected
+    assert not missing, f"Missing commands: {missing}"
+    assert not extra, f"Extra commands: {extra}"
+
+
+def test_parse_firmware_args():
+    parser = build_parser()
+    args = parser.parse_args(["parse-firmware", "firmware.bin"])
+    assert args.file == "firmware.bin"
+    assert args.format == "wd"
+    assert args.func is not None
+
+
+def test_read_ram_args():
+    parser = build_parser()
+    args = parser.parse_args(["read-ram", "--drive", "/dev/sdb", "--addr", "0x41414141"])
+    assert args.drive == "/dev/sdb"
+    assert args.addr == "0x41414141"
+    assert args.size == 256

