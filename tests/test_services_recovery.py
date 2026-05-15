@@ -1,4 +1,4 @@
-from hdd_firmware_toolkit.hw.data_recovery import ReadRetryResult, SATADataRecoveryOps
+from hdd_toolkit.hw.data_recovery import ReadRetryResult, SATADataRecoveryOps
 
 
 def test_read_retry_escalation_fails_without_hardware():

@@ -1,4 +1,4 @@
-from hdd_firmware_toolkit.core.utils import _c, diff_firmware, hexdump, scan_strings
+from hdd_toolkit.core.utils import _c, diff_firmware, hexdump, scan_strings
 
 
 def test_c_no_tty():

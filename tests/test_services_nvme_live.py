@@ -1,8 +1,8 @@
 import ctypes
 import struct
 
-from hdd_firmware_toolkit.core.utils import _hex_dump
-from hdd_firmware_toolkit.nvme.admin import NVMeAdminPassthrough, NVMeDevice, NvmePassthruCmd
+from hdd_toolkit.core.utils import _hex_dump
+from hdd_toolkit.nvme.admin import NVMeAdminPassthrough, NVMeDevice, NvmePassthruCmd
 
 
 def test_nvme_passthru_cmd_struct_size():
@@ -98,7 +98,7 @@ def test_nvme_device_context_manager_errors():
 
 
 def test_nvme_live_identify_cli():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["nvme-live-identify", "0"])
@@ -107,7 +107,7 @@ def test_nvme_live_identify_cli():
 
 
 def test_nvme_live_smart_cli():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["nvme-live-smart", "0"])
@@ -116,7 +116,7 @@ def test_nvme_live_smart_cli():
 
 
 def test_nvme_live_get_log_cli():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["nvme-live-get-log", "0xC0", "--device", "0"])
@@ -126,7 +126,7 @@ def test_nvme_live_get_log_cli():
 
 
 def test_nvme_live_fw_log_cli():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["nvme-live-fw-log", "0"])
@@ -135,7 +135,7 @@ def test_nvme_live_fw_log_cli():
 
 
 def test_nvme_live_send_cli():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["nvme-live-send", "0xC0", "--device", "0"])
@@ -145,7 +145,7 @@ def test_nvme_live_send_cli():
 
 
 def test_sandisk_live_sniff_cli():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["sandisk-live-sniff", "0"])
@@ -154,7 +154,7 @@ def test_sandisk_live_sniff_cli():
 
 
 def test_nvme_live_identify_hex_flag():
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["nvme-live-identify", "0", "--hex"])
@@ -164,7 +164,7 @@ def test_nvme_live_identify_hex_flag():
 def test_nvme_live_send_with_file():
     import tempfile
 
-    from hdd_firmware_toolkit.cli.handlers import build_parser
+    from hdd_toolkit.cli.handlers import build_parser
 
     with tempfile.NamedTemporaryFile() as f:
         f.write(b"test firmware data")

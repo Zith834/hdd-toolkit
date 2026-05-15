@@ -1,13 +1,13 @@
 import struct
 
-from hdd_firmware_toolkit.firmware.samsung import (
+from hdd_toolkit.firmware.samsung import (
     SamsungFirmwareParser,
     SamsungSection,
     samsung_decode,
 )
-from hdd_firmware_toolkit.firmware.seagate import SeagateFWLoader
-from hdd_firmware_toolkit.firmware.toshiba import ToshibaFirmwareParser
-from hdd_firmware_toolkit.firmware.wd import LZHUFDecoder, WDFirmwareParser, WDSection
+from hdd_toolkit.firmware.seagate import SeagateFWLoader
+from hdd_toolkit.firmware.toshiba import ToshibaFirmwareParser
+from hdd_toolkit.firmware.wd import LZHUFDecoder, WDFirmwareParser, WDSection
 
 
 def test_lzhuf_init():

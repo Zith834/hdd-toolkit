@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hdd-firmware-toolkit"
+name = "hdd-toolkit"
 version = "0.1.0"
 description = "HDD/SSD firmware hacking toolkit: parse, patch, dump, recover, and analyze firmware"
 readme = "README.md"
@@ -31,9 +31,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/daedalus/hdd_firmware_toolkit"
-Repository = "https://github.com/daedalus/hdd_firmware_toolkit"
-Documentation = "https://github.com/daedalus/hdd_firmware_toolkit#readme"
+Homepage = "https://github.com/daedalus/hdd-toolkit"
+Repository = "https://github.com/daedalus/hdd-toolkit"
+Documentation = "https://github.com/daedalus/hdd-toolkit#readme"
 
 [project.optional-dependencies]
 serial = ["pyserial"]
@@ -48,13 +48,32 @@ all = [
 ]
 
 [project.scripts]
-hdd-firmware-toolkit = "hdd_firmware_toolkit.__main__:main"
+hdd-toolkit = "hdd_toolkit.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hdd_firmware_toolkit"]
+packages = ["src/hdd_toolkit"]
 
 [tool.hatch.version]
-path = "src/hdd_firmware_toolkit/_version.py"
+path = "src/hdd_toolkit/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = [
+    "src/hdd_toolkit/_monolith.py",
+]
+
+[tool.coverage.run]
+source = ["src/hdd_toolkit"]
+omit = ["src/hdd_toolkit/_monolith.py"]
 
 [tool.ruff]
 target-version = "py311"
@@ -87,27 +106,8 @@ ignore = [
 fixable = ["ALL"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/hdd_firmware_toolkit/cli/*" = ["T201"]
+"src/hdd_toolkit/cli/*" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = "-v --tb=short"
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-ignore_missing_imports = true
-exclude = [
-    "src/hdd_firmware_toolkit/_monolith.py",
-]
-
-[tool.coverage.run]
-source = ["src/hdd_firmware_toolkit"]
-omit = ["src/hdd_firmware_toolkit/_monolith.py"]

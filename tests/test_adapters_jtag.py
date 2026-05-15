@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from hdd_firmware_toolkit.hw.jtag import OpenOCDBridge
+from hdd_toolkit.hw.jtag import OpenOCDBridge
 
 
 @patch("socket.create_connection")

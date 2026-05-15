@@ -1,6 +1,6 @@
 import struct
 
-from hdd_firmware_toolkit.hw.hpa_dco import HPADCOAccess
+from hdd_toolkit.hw.hpa_dco import HPADCOAccess
 
 
 def test_detect_hpa_from_identify():

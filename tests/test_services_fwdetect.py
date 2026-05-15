@@ -1,4 +1,4 @@
-from hdd_firmware_toolkit.firmware.detection import FirmwareDetection
+from hdd_toolkit.firmware.detection import FirmwareDetection
 
 
 def test_current_draw_anomaly_normal():

@@ -1,6 +1,6 @@
-from hdd_firmware_toolkit.nvme.envme import eNVMeIntegration
-from hdd_firmware_toolkit.nvme.ofabrics import NVMeOverFabrics
-from hdd_firmware_toolkit.nvme.timing import NVMeTimingSideChannel
+from hdd_toolkit.nvme.envme import eNVMeIntegration
+from hdd_toolkit.nvme.ofabrics import NVMeOverFabrics
+from hdd_toolkit.nvme.timing import NVMeTimingSideChannel
 
 
 def test_build_read_cmd():

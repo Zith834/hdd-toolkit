@@ -1,4 +1,4 @@
-from hdd_firmware_toolkit.cli.handlers import build_parser
+from hdd_toolkit.cli.handlers import build_parser
 
 
 def test_parser_created():

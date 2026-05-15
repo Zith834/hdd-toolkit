@@ -1,15 +1,15 @@
-from hdd_firmware_toolkit.ata.commands import ATACmd, ATAError
-from hdd_firmware_toolkit.ata.sat import SATCmd
-from hdd_firmware_toolkit.ata.wd_vsc import WD_VSC
-from hdd_firmware_toolkit.firmware.patcher import FirmwarePatch
-from hdd_firmware_toolkit.firmware.samsung import SamsungSection
-from hdd_firmware_toolkit.firmware.seagate import SeagateLODSection
-from hdd_firmware_toolkit.firmware.toshiba import ToshibaFirmwareImage
-from hdd_firmware_toolkit.firmware.wd import WDSection
-from hdd_firmware_toolkit.hw.data_recovery import ReadRetryResult
-from hdd_firmware_toolkit.hw.usb_bridge import USBBridgeInfo
-from hdd_firmware_toolkit.nvme.admin import NVMeAdminCmd
-from hdd_firmware_toolkit.samsung_mex.memory_map import SamsungFlashCmd
+from hdd_toolkit.ata.commands import ATACmd, ATAError
+from hdd_toolkit.ata.sat import SATCmd
+from hdd_toolkit.ata.wd_vsc import WD_VSC
+from hdd_toolkit.firmware.patcher import FirmwarePatch
+from hdd_toolkit.firmware.samsung import SamsungSection
+from hdd_toolkit.firmware.seagate import SeagateLODSection
+from hdd_toolkit.firmware.toshiba import ToshibaFirmwareImage
+from hdd_toolkit.firmware.wd import WDSection
+from hdd_toolkit.hw.data_recovery import ReadRetryResult
+from hdd_toolkit.hw.usb_bridge import USBBridgeInfo
+from hdd_toolkit.nvme.admin import NVMeAdminCmd
+from hdd_toolkit.samsung_mex.memory_map import SamsungFlashCmd
 
 
 def test_wd_section_defaults():

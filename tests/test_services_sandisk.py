@@ -1,7 +1,7 @@
 import struct
 
-from hdd_firmware_toolkit.nvme.admin import NVMeAdminCmd, NVMeAdminPassthrough
-from hdd_firmware_toolkit.nvme.sandisk import SanDiskNVMeVSC
+from hdd_toolkit.nvme.admin import NVMeAdminCmd, NVMeAdminPassthrough
+from hdd_toolkit.nvme.sandisk import SanDiskNVMeVSC
 
 
 class TestSanDiskNVMeVSC:

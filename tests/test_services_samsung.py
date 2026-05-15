@@ -1,5 +1,5 @@
-from hdd_firmware_toolkit.ata.commands import SAMSUNG_840_EVO_FW_HISTORY
-from hdd_firmware_toolkit.samsung_mex.memory_map import SamsungMEXMap
+from hdd_toolkit.ata.commands import SAMSUNG_840_EVO_FW_HISTORY
+from hdd_toolkit.samsung_mex.memory_map import SamsungMEXMap
 
 
 def test_mex_map_constants():

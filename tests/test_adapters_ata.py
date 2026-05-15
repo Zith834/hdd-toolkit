@@ -1,4 +1,4 @@
-from hdd_firmware_toolkit.ata.sat import SATLayer
+from hdd_toolkit.ata.sat import SATLayer
 
 
 def test_build_ata_pass_through_16_pio():

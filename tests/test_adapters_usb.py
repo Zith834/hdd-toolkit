@@ -1,4 +1,4 @@
-from hdd_firmware_toolkit.hw.usb_bridge import USBToSATABridge
+from hdd_toolkit.hw.usb_bridge import USBToSATABridge
 
 
 def test_identify_from_inquiry_jmicron():

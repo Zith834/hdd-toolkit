@@ -1,5 +1,5 @@
-from hdd_firmware_toolkit.exploit.hotpatch import PatchTemplates
-from hdd_firmware_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
+from hdd_toolkit.exploit.hotpatch import PatchTemplates
+from hdd_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
 
 
 def test_patcher_detect_vendor():
