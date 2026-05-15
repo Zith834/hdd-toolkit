@@ -12,23 +12,23 @@ def _c(code: str, text: str) -> str:
 
 
 def ok(msg):
-    pass
+    print(f"\033[32m[+] {msg}\033[0m")
 
 
 def info(msg):
-    pass
+    print(f"[*] {msg}")
 
 
 def warn(msg):
-    pass
+    print(f"\033[33m[!] {msg}\033[0m")
 
 
 def err(msg):
-    pass
+    print(f"\033[31m[-] {msg}\033[0m", file=sys.stderr)
 
 
 def hdr(msg):
-    pass
+    print(f"\033[36m=== {msg} ===\033[0m")
 
 
 def hexdump(data: bytes, addr: int = 0, width: int = 16) -> str:

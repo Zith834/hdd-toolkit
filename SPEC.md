@@ -59,7 +59,7 @@ See `README.md` for installation and usage instructions.
 - Run with: `ruff check src/`
 
 ## Versioning
-- Single source of truth: `src/hdd_firmware_toolkit/_version.py`
+- Single source of truth: `src/hdd_toolkit/_version.py`
 - Follows semantic versioning
 
 ## Changelog

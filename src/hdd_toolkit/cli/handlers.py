@@ -196,10 +196,14 @@ def cmd_nvme_live_identify(args):
     Read and parse Identify Controller data from a live NVMe device.
     Opens /dev/nvme{device}, sends IDENTIFY controller, and dumps key fields.
     """
-    hdr(f"NVMe Live Identify Controller: /dev/nvme{args.device}")
+    try:
+        device = int(args.device)
+    except ValueError:
+        device = args.device
+    hdr(f"NVMe Live Identify Controller: /dev/nvme{device}")
     cmd = NVMeAdminPassthrough.identify_ctrlr()
     try:
-        data = NVMeAdminPassthrough.execute_admin_cmd(args.device, cmd)
+        data = NVMeAdminPassthrough.execute_admin_cmd(device, cmd)
     except OSError as e:
         err(f"ioctl failed: {e}")
         if e.errno == 1:
@@ -1136,7 +1140,7 @@ def cmd_patch_template(args):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="hdd_firmware_toolkit",
+        prog="hdd-toolkit",
         description="HDD Firmware Hacking Toolkit",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,

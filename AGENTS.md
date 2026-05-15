@@ -3,8 +3,8 @@
 ## Project Structure
 
 ```
-hdd_firmware_toolkit/
-├── src/hdd_firmware_toolkit/
+hdd-toolkit/
+├── src/hdd_toolkit/
 │   ├── __init__.py          # Top-level imports from all sub-modules
 │   ├── __main__.py          # python -m entry point
 │   ├── _version.py          # __version__ = "0.1.0"

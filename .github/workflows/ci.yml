@@ -31,7 +31,7 @@ jobs:
         run: ruff check src/
 
       - name: Type check with mypy
-        run: mypy --ignore-missing-imports src/ --exclude "src/hdd_firmware_toolkit/_monolith\\.py"
+        run: mypy --ignore-missing-imports src/ --exclude "src/hdd_toolkit/_monolith\\.py"
 
       - name: Test with pytest
         run: pytest tests/ -v --tb=short

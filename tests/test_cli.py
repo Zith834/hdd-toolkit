@@ -4,7 +4,7 @@ from hdd_toolkit.cli.handlers import build_parser
 def test_parser_created():
     parser = build_parser()
     assert parser is not None
-    assert parser.prog == "hdd_firmware_toolkit"
+    assert parser.prog == "hdd-toolkit"
 
 
 def test_parser_has_all_commands():
