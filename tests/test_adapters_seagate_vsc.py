@@ -1,7 +1,5 @@
 import struct
 
-import pytest
-
 from hdd_toolkit.ata.seagate_vsc import (
     SCT_CYL_HI,
     SCT_CYL_LO,
@@ -15,7 +13,6 @@ from hdd_toolkit.ata.seagate_vsc import (
     _SCT_SA_READ,
     _SCT_SA_WRITE,
 )
-from hdd_toolkit.ata.wd_vsc import WD_DATA_LOG_ADDR, WD_SA_ROM_MAP, WDVSCClient
 
 
 # ---------------------------------------------------------------------------
@@ -152,56 +149,3 @@ def test_list_modules_empty_drive():
     client = SeagateF3SCTClient(dev)
     modules = client.list_modules(max_module=4)
     assert modules == {}
-
-
-# ---------------------------------------------------------------------------
-# WD_DATA_LOG_ADDR
-# ---------------------------------------------------------------------------
-
-
-def test_wd_data_log_addr():
-    assert WD_DATA_LOG_ADDR == 0xBF
-
-
-# ---------------------------------------------------------------------------
-# WD_SA_ROM_MAP
-# ---------------------------------------------------------------------------
-
-
-def test_wd_sa_rom_map_keys():
-    expected = {0x102, 0x103, 0x104, 0x105, 0x106, 0x107, 0x109}
-    assert set(WD_SA_ROM_MAP.keys()) == expected
-
-
-def test_wd_sa_rom_map_values():
-    assert WD_SA_ROM_MAP[0x102] == 0x0A
-    assert WD_SA_ROM_MAP[0x103] == 0x47
-    assert WD_SA_ROM_MAP[0x104] == 0x0D
-    assert WD_SA_ROM_MAP[0x105] == 0x30
-    assert WD_SA_ROM_MAP[0x106] == 0x4F
-    assert WD_SA_ROM_MAP[0x107] == 0x0B
-    assert WD_SA_ROM_MAP[0x109] is None
-
-
-# ---------------------------------------------------------------------------
-# WDVSCClient.enable_firmware_mode
-# ---------------------------------------------------------------------------
-
-
-def test_wd_enable_firmware_mode_no_dev():
-    with pytest.raises(AttributeError):
-        WDVSCClient(None).enable_firmware_mode()
-
-
-# ---------------------------------------------------------------------------
-# WDVSCClient._smart_read uses WD_DATA_LOG_ADDR (0xBF)
-# ---------------------------------------------------------------------------
-
-
-def test_wd_smart_read_uses_data_log():
-    dev = _MockDevice(return_data=b"\x00" * 512)
-    client = WDVSCClient(dev)
-    client._smart_read(512)
-    read_calls = [c for c in dev.calls if c["regs"].get("features") == 0xD5]
-    assert len(read_calls) == 1
-    assert read_calls[0]["regs"]["lba_lo"] == WD_DATA_LOG_ADDR

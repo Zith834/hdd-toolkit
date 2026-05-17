@@ -1063,7 +1063,7 @@ def cmd_seagate_sa_read(args):
 def cmd_seagate_sa_write(args):
     hdr(f"Seagate SA Write: drive={args.drive}  module=0x{int(args.module, 0):02X}")
     data = Path(args.file).read_bytes()
-    info(f"Writing {len(data)} bytes to module 0x{int(args.module, 0):02X}=")
+    info(f"Writing {len(data)} bytes to module 0x{int(args.module, 0):02X}")
     with ATADevice(args.drive) as dev:
         client = SeagateF3SCTClient(dev)
         client.write_module(int(args.module, 0), data)

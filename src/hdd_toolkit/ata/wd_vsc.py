@@ -23,14 +23,6 @@ SMART_READ = 0xD5
 CYL_LO = 0x4F
 CYL_HI = 0xC2
 
-# Mapping from WD ROYL SA module IDs to their ROM counterpart module IDs.
-# SA modules 0x102-0x109 are mirrors of specific ROM modules; regenerating the
-# ROM from SA requires reassembling these pairs in the correct order.
-# MOD 0x109 has no single ROM counterpart -- it contains the header, full ROM
-# code blob, and module descriptor templates.
-#
-# Sources:
-#   - forum.hddguru.com -- "Regenerating a WD ROYL ROM from SA MODs"
 WD_SA_ROM_MAP: dict[int, int | None] = {
     0x102: 0x0A,
     0x103: 0x47,
@@ -40,6 +32,16 @@ WD_SA_ROM_MAP: dict[int, int | None] = {
     0x107: 0x0B,
     0x109: None,
 }
+"""Mapping from WD ROYL SA module IDs to their ROM counterpart module IDs.
+
+SA modules 0x102-0x109 are mirrors of specific ROM modules; regenerating the
+ROM from SA requires reassembling these pairs in the correct order.
+MOD 0x109 has no single ROM counterpart -- it contains the header, full ROM
+code blob, and module descriptor templates.
+
+Sources:
+  - forum.hddguru.com -- "Regenerating a WD ROYL ROM from SA MODs"
+"""
 
 
 class WDVSCClient:
