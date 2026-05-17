@@ -18,6 +18,8 @@ def test_parser_has_all_commands():
         "samsung-memory-map", "samsung-fw-history",
         "samsung-gpio", "samsung-ncq", "samsung-aes-info",
         "samsung-dma-dump", "samsung-ftl-preload",
+        "samsung-flash-read", "samsung-flash-write",
+        "samsung-flash-erase", "samsung-flash-integrity",
         "samsung-safe-shell", "samsung-safe-read", "samsung-safe-write",
         "parse-seagate",
         "sa-probe", "sa-dump", "sa-hide", "sa-extract",
