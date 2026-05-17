@@ -36,6 +36,9 @@ from hdd_toolkit.exploit.hotpatch import (
 from hdd_toolkit.exploit.psoc_coldboot import PSoCColdBoot
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
 from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
+from hdd_toolkit.exploit.xbox360_firmware_spoof import (
+    FirmwareIdentitySpoofDetector,
+)
 from hdd_toolkit.firmware.detection import FirmwareDetection
 from hdd_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
 from hdd_toolkit.firmware.samsung import SamsungFirmwareParser, samsung_decode
@@ -1402,6 +1405,53 @@ def cmd_patch_template(args):
     ok(f"Wrote {len(code)} bytes -- {args.output}")
 
 
+def cmd_fw_identity_check(args):
+    hdr("Xbox 360 / HDDHackr Firmware Identity Spoof Check")
+    identify_data = Path(args.identify).read_bytes() if args.identify else bytes(512)
+    security_sector = Path(args.security_sector).read_bytes() if args.security_sector else None
+    smart_data = Path(args.smart).read_bytes() if args.smart else None
+
+    report = FirmwareIdentitySpoofDetector.forensic_report(
+        identify_data=identify_data,
+        security_sector=security_sector,
+        smart_data=smart_data,
+    )
+
+    strings = report["strings"]
+    info(f"Model    : {strings.get('model', '')}")
+    info(f"Serial   : {strings.get('serial', '')}")
+    info(f"FW Rev   : {strings.get('firmware_rev', '')}")
+
+    if security_sector is not None:
+        sec = report["security_sector"]
+        if sec.get("detected"):
+            warn(
+                f"Xbox 360 security sector detected  magic={sec['magic_name']}  "
+                f"serial={sec['serial']}  model={sec['model']}"
+            )
+            if sec.get("secret_initialized"):
+                warn("  Xbox 360 HMAC secret is initialized (drive was used in a console)")
+        else:
+            ok("No Xbox 360 security sector magic found in provided sector data")
+
+    spoof = report["spoof_check"]
+    for indicator in spoof.get("indicators", []):
+        warn(f"Spoof indicator: {indicator}")
+
+    if report["smart_check"].get("mismatch"):
+        sc = report["smart_check"]
+        warn(
+            f"SMART serial mismatch: IDENTIFY={sc['identify_serial']}  "
+            f"SMART={sc['smart_serial']}"
+        )
+
+    verdict = report["verdict"]
+    if verdict == "suspicious":
+        warn(f"SUSPICIOUS: flags={report['flags']}")
+    else:
+        ok("No firmware identity spoofing indicators detected")
+
+
 # =============================================================================
 # Argument parser
 # =============================================================================
@@ -2130,6 +2180,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("before", help="JSON file: I2C capture before PIN entry")
     sp.add_argument("after", help="JSON file: I2C capture after PIN entry")
     sp.set_defaults(func=cmd_i2c_diff)
+
+    # == Xbox 360 / HDDHackr firmware identity spoof check ====================
+    sp = sub.add_parser(
+        "fw-identity-check",
+        help="Detect Xbox 360 / HDDHackr firmware-level identity spoofing (Read et al., 2013)",
+    )
+    sp.add_argument("--identify", metavar="FILE", help="512-byte IDENTIFY DEVICE dump")
+    sp.add_argument(
+        "--security-sector",
+        metavar="FILE",
+        help="512-byte raw sector from LBA 0 or drive security-sector LBA",
+    )
+    sp.add_argument(
+        "--smart",
+        metavar="FILE",
+        help="512-byte SMART READ DATA response for serial cross-check",
+    )
+    sp.set_defaults(func=cmd_fw_identity_check)
 
     return p
 

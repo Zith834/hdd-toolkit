@@ -32,8 +32,9 @@ bridge platforms.
   kernel module injection modelling
 - **NVMe-oF:** CVE-2023-5178 double-free PoC, PDU parsing, kernel
   vulnerability checking
-- **Firmware Detection:** Current draw analysis, timing anomaly
-  detection, checksum verification, integrity reporting
+- **Firmware Identity Spoof Detection:** Xbox 360 / HDDHackr-style firmware-level
+  identity manipulation (Read et al., 2013) — security sector detection, IDENTIFY
+  string analysis, SMART serial cross-check, capacity plausibility
 - **Firmware Exploitation:** DOWNLOAD-MICROCODE offset overflow,
   ASM2362 XRAM injection, Service Area hide/extract
 - **Patch Templates:** NOP sleds, data traps, exfiltration hooks,
@@ -140,7 +141,7 @@ hdd-firmware-toolkit nvmeof-check-kernel --kernel 6.7
 | `nvmeof-check-kernel` | Check CVE-2023-5178 vulnerability |
 | `nvmeof-build-icreq` | Build NVMe-oF TCP ICReq PDU |
 | `nvmeof-poc` | Generate double-free PoC PDU |
-| `fwdetect-current` | Detect FW via current draw |
+| `fw-identity-check` | Detect Xbox 360 / HDDHackr firmware identity spoofing |
 | `fwdetect-timing` | Detect FW via timing analysis |
 | `fwdetect-verify` | Verify firmware checksums |
 | `fwdetect-report` | Comprehensive integrity report |

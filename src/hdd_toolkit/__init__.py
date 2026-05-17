@@ -40,6 +40,10 @@ from hdd_toolkit.exploit.hotpatch import (
 from hdd_toolkit.exploit.psoc_coldboot import ColdBootResult, I2CDiff, PSoCColdBoot
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
 from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
+from hdd_toolkit.exploit.xbox360_firmware_spoof import (
+    FirmwareIdentitySpoofDetector,
+    Xbox360SecuritySector,
+)
 from hdd_toolkit.firmware.detection import FirmwareDetection
 from hdd_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
 from hdd_toolkit.firmware.samsung import (
@@ -86,6 +90,7 @@ __all__ = [
     "ATASecurityCommands",
     "ColdBootResult",
     "FirmwareDetection",
+    "FirmwareIdentitySpoofDetector",
     "FirmwarePatch",
     "FirmwarePatcher",
     "FirmwareUpdateExploit",
@@ -135,6 +140,7 @@ __all__ = [
     "WDFirmwareParser",
     "WDSection",
     "WDVSCClient",
+    "Xbox360SecuritySector",
     "__version__",
     "__version_info__",
     "_bytes_to_asm",
