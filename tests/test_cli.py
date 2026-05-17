@@ -23,6 +23,7 @@ def test_parser_has_all_commands():
         "samsung-safe-shell", "samsung-safe-read", "samsung-safe-write",
         "parse-seagate",
         "sa-probe", "sa-dump", "sa-hide", "sa-extract",
+        "sa-scan-spare",
         "seagate-sa-info", "seagate-sa-read", "seagate-sa-write", "seagate-sa-dump",
         "wd-sa-info",
         "fwexploit-send", "fwexploit-activate",
@@ -42,10 +43,15 @@ def test_parser_has_all_commands():
         "nvmeof-check-kernel", "nvmeof-build-icreq", "nvmeof-poc",
         "fwdetect-current", "fwdetect-timing",
         "fwdetect-verify", "fwdetect-report",
+        "fw-readback-probe",
         "sandisk-id", "sandisk-sniff-logs", "sandisk-build-log",
         "sandisk-build-vu", "sandisk-build-purge", "sandisk-build-resize",
         "sandisk-parse-c0", "sandisk-parse-ca", "sandisk-parse-d0",
         "sandisk-live-sniff",
+        "spi-decode-csv",
+        "psoc-sync", "psoc-read-sec", "psoc-read-srom", "psoc-write-reg",
+        "psoc-locate-pin", "psoc-dump-block",
+        "i2c-diff",
     }
     missing = expected - seen
     extra = seen - expected

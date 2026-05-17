@@ -33,7 +33,9 @@ from hdd_toolkit.exploit.hotpatch import (
     benchmark_reads,
     deploy_hot_patch,
 )
+from hdd_toolkit.exploit.psoc_coldboot import PSoCColdBoot
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
+from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
 from hdd_toolkit.firmware.detection import FirmwareDetection
 from hdd_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
 from hdd_toolkit.firmware.samsung import SamsungFirmwareParser, samsung_decode
@@ -42,7 +44,9 @@ from hdd_toolkit.firmware.toshiba import ToshibaFirmwareParser
 from hdd_toolkit.firmware.wd import WDFirmwareParser
 from hdd_toolkit.hw.data_recovery import SATADataRecoveryOps
 from hdd_toolkit.hw.hpa_dco import HPADCOAccess
+from hdd_toolkit.hw.issp import ISSPEngine
 from hdd_toolkit.hw.jtag import OpenOCDBridge
+from hdd_toolkit.hw.spi_flash import SPIFlashCapture
 from hdd_toolkit.hw.usb_bridge import USBToSATABridge
 from hdd_toolkit.nvme.admin import NVMeAdminPassthrough
 from hdd_toolkit.nvme.envme import eNVMeIntegration
@@ -1166,6 +1170,184 @@ def cmd_sa_extract(args):
         hexdump(data[:256])
 
 
+# == Spare-sector forensics commands =========================================
+
+
+def cmd_sa_scan_spare(args):
+    hdr("Spare-Sector Forensic Scanner")
+    identify_data = Path(args.identify).read_bytes() if args.identify else bytes(512)
+    native_max = args.native_max if args.native_max is not None else 0
+    glist_entries = []
+    if args.glist:
+        import json as _json
+
+        glist_entries = _json.loads(Path(args.glist).read_text())
+    vsc_max = args.vsc_max if args.vsc_max is not None else None
+
+    report = SpareSectorForensics.forensic_report(
+        identify_data=identify_data,
+        native_max_lba=native_max,
+        glist_entries=glist_entries,
+        vsc_max_lba=vsc_max,
+    )
+    verdict = report["verdict"]
+    if verdict == "suspicious":
+        warn(f"SUSPICIOUS: flags={report['flags']}")
+    else:
+        ok("No spare-sector anomalies detected")
+
+    hc = report["hidden_capacity"]
+    if hc.get("hidden_sectors", 0) > 0:
+        warn(
+            f"Hidden capacity: {hc['hidden_sectors']} sectors "
+            f"({hc['hidden_bytes'] / 1024:.1f} KB)"
+        )
+    gl = report["glist"]
+    info(f"G-list entries: {gl['entry_count']}  verdict: {gl['verdict']}")
+    for rng in report["hidden_ranges"].get("hidden_ranges", []):
+        info(
+            f"  Hidden range [{rng['type']}]: "
+            f"LBA 0x{rng['start_lba']:X}-0x{rng['end_lba']:X} "
+            f"({rng['sector_count']} sectors)"
+        )
+
+
+# == Firmware read-back capability probe =====================================
+
+
+def cmd_fw_readback_probe(args):
+    hdr("Firmware Read-Back Capability Probe")
+    result = FirmwareDetection.fw_readback_capability(
+        has_jtag=args.jtag,
+        has_spi_clip=args.spi_clip,
+        has_vsc_readback=args.vsc,
+        drive_type=args.drive_type,
+    )
+    cap = result["capability"]
+    if cap == "full":
+        ok(f"Read-back capability: FULL  paths={result['paths']}")
+    elif cap == "partial":
+        warn(f"Read-back capability: PARTIAL  paths={result['paths']}")
+    else:
+        warn(f"Read-back capability: BLIND  reason: {result['blind_reason']}")
+    info(f"Applicable detection methods: {result['detection_methods']}")
+
+
+# == SPI flash CSV decode commands ============================================
+
+
+def cmd_spi_decode_csv(args):
+    hdr(f"SPI Flash CSV Decode: {args.csv_file}")
+    csv_text = Path(args.csv_file).read_text()
+    info_obj = SPIFlashCapture.decode_csv(csv_text)
+
+    if info_obj.jedec_id:
+        jedec = SPIFlashCapture.parse_jedec_id(info_obj.jedec_id)
+        ok(
+            f"JEDEC ID: {info_obj.jedec_id.hex().upper()}  "
+            f"Mfr: {jedec['manufacturer']}  "
+            f"Capacity: {jedec['capacity_kb']} KB"
+        )
+    else:
+        warn("No JEDEC ID found in capture")
+
+    if info_obj.firmware_blob:
+        out = args.output or "dump.bin"
+        Path(out).write_bytes(info_obj.firmware_blob)
+        ok(f"Firmware blob: {len(info_obj.firmware_blob)} bytes  SHA-1: {info_obj.sha1}")
+        ok(f"Written to {out}")
+    else:
+        warn("No firmware data found in capture")
+
+    info(f"Transactions decoded: {len(info_obj.transactions)}")
+
+
+# == ISSP PSoC commands =======================================================
+
+
+def cmd_psoc_sync(args):
+    hdr("ISSP Synchronisation Sequence")
+    engine = ISSPEngine()
+    vectors = engine.sync_sequence()
+    info(f"Entry sequence: {len(vectors)} vectors")
+    for i, v in enumerate(vectors[:8]):
+        info(f"  [{i}] 0x{v.bits:06X}  bits={v.length}")
+    if len(vectors) > 8:
+        info(f"  ... ({len(vectors) - 8} more vectors)")
+    ok("Sync sequence built (send after XRES release + magic on SDATA)")
+
+
+def cmd_psoc_read_sec(args):
+    hdr("ISSP Read Security Byte Table")
+    engine = ISSPEngine()
+    vectors = engine.read_security_data()
+    info(f"Security read sequence: {len(vectors)} vectors")
+    for i, v in enumerate(vectors[:4]):
+        info(f"  [{i}] opcode=0x{(v.bits >> 18) & 0xF:X}  addr=0x{(v.bits >> 10) & 0xFF:02X}")
+    ok("Security table read vectors built")
+
+
+def cmd_psoc_read_srom(args):
+    hdr(f"ISSP SROM Call: fn=0x{args.fn:02X}")
+    engine = ISSPEngine()
+    vectors = engine.srom_call(args.fn)
+    for i, v in enumerate(vectors):
+        info(f"  [{i}] 0x{v.bits:06X}")
+    ok(f"SROM call vectors built for fn=0x{args.fn:02X}")
+
+
+def cmd_psoc_write_reg(args):
+    hdr(f"ISSP Write Register: addr=0x{args.addr:02X}  data=0x{args.data:02X}")
+    engine = ISSPEngine()
+    vec = engine.write_reg(args.addr, args.data)
+    info(f"Vector: 0x{vec.bits:06X}")
+    ok("Write-register vector built")
+
+
+# == PSoC cold-boot attack commands ===========================================
+
+
+def cmd_psoc_locate_pin(args):
+    hdr(f"Locate PIN in PSoC Flash Dump: {args.dump}")
+    flash_bytes = Path(args.dump).read_bytes()
+    attack = PSoCColdBoot()
+    result = attack.locate_pin(flash_bytes, pin_length=args.pin_length)
+    if result["found"]:
+        ok(f"Found {len(result['candidates'])} PIN candidate(s):")
+        for c in result["candidates"][:10]:
+            ok(f"  offset=0x{c['offset']:04X}  PIN={c['pin']}")
+    else:
+        warn("No ASCII digit runs of expected length found in dump")
+
+
+def cmd_psoc_dump_block(args):
+    hdr(f"PSoC Flash Block Dump: {args.dump}  block={args.block}")
+    flash_bytes = Path(args.dump).read_bytes()
+    attack = PSoCColdBoot()
+    result = attack.dump_block(flash_bytes, args.block, block_size=args.block_size)
+    info(f"Block {result['block_index']}  offset=0x{result['start_offset']:04X}")
+    info(f"  all_ff={result['all_ff']}  all_zero={result['all_zero']}")
+    info(f"  hex: {result['hex'][:64]}{'...' if len(result['hex']) > 64 else ''}")
+
+
+def cmd_i2c_diff(args):
+    hdr("I2C Bus Capture Diff")
+    import json as _json
+
+    before = _json.loads(Path(args.before).read_text())
+    after = _json.loads(Path(args.after).read_text())
+    diffs = PSoCColdBoot.i2c_diff(before, after)
+    if not diffs:
+        ok("No I2C register differences detected")
+        return
+    ok(f"{len(diffs)} register change(s):")
+    for d in diffs:
+        info(
+            f"  addr=0x{d.address:02X}  reg=0x{d.register:02X}  "
+            f"0x{d.before:02X} -> 0x{d.after:02X}"
+        )
+
+
 # == Firmware update exploit commands =========================================
 
 
@@ -1853,6 +2035,101 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--value", required=True, help="32-bit value (hex)")
     sp.add_argument("--verify", action="store_true", help="Read back and confirm write")
     sp.set_defaults(func=cmd_samsung_safe_write)
+
+    # == Spare-sector forensic scanner ========================================
+    sp = sub.add_parser(
+        "sa-scan-spare",
+        help="Dump and analyse defect tables for Equation Group-style covert storage",
+    )
+    sp.add_argument("--identify", metavar="FILE", help="512-byte IDENTIFY DEVICE dump")
+    sp.add_argument(
+        "--native-max",
+        type=lambda x: int(x, 0),
+        default=0,
+        metavar="LBA",
+        help="Native max LBA from READ NATIVE MAX ADDRESS",
+    )
+    sp.add_argument("--glist", metavar="FILE", help="G-list entries JSON file")
+    sp.add_argument(
+        "--vsc-max",
+        type=lambda x: int(x, 0),
+        default=None,
+        metavar="LBA",
+        help="Max LBA accessible via VSC overlay (optional)",
+    )
+    sp.set_defaults(func=cmd_sa_scan_spare)
+
+    # == Firmware read-back capability probe ==================================
+    sp = sub.add_parser(
+        "fw-readback-probe",
+        help="Probe firmware read-back capability (blind/partial/full)",
+    )
+    sp.add_argument("--jtag", action="store_true", help="JTAG/OpenOCD is available")
+    sp.add_argument("--spi-clip", action="store_true", help="SPI flash clip is attached (SSD)")
+    sp.add_argument("--vsc", action="store_true", help="Drive responds to VSC readback")
+    sp.add_argument(
+        "--drive-type",
+        choices=["hdd", "ssd"],
+        default="hdd",
+        help="Drive type (default: hdd)",
+    )
+    sp.set_defaults(func=cmd_fw_readback_probe)
+
+    # == SPI flash CSV decode =================================================
+    sp = sub.add_parser(
+        "spi-decode-csv",
+        help="Decode Saleae SPI analyser CSV capture of JMS539 firmware boot",
+    )
+    sp.add_argument("csv_file", help="Saleae SPI CSV export file")
+    sp.add_argument("-o", "--output", default="dump.bin", help="Output firmware binary")
+    sp.set_defaults(func=cmd_spi_decode_csv)
+
+    # == ISSP PSoC programming ================================================
+    sp = sub.add_parser("psoc-sync", help="Build ISSP synchronisation vector sequence")
+    sp.set_defaults(func=cmd_psoc_sync)
+
+    sp = sub.add_parser("psoc-read-sec", help="Build ISSP vectors to read PSoC security table")
+    sp.set_defaults(func=cmd_psoc_read_sec)
+
+    sp = sub.add_parser("psoc-read-srom", help="Build ISSP SROM syscall vectors")
+    sp.add_argument(
+        "--fn",
+        type=lambda x: int(x, 0),
+        default=ISSPEngine.SROM_FN_CHECKSUM_SETUP,
+        help="SROM function number (hex, default 0x07=CHECKSUM_SETUP)",
+    )
+    sp.set_defaults(func=cmd_psoc_read_srom)
+
+    sp = sub.add_parser("psoc-write-reg", help="Build ISSP write-register vector")
+    sp.add_argument("--addr", type=lambda x: int(x, 0), required=True, help="Register address")
+    sp.add_argument("--data", type=lambda x: int(x, 0), required=True, help="Data byte")
+    sp.set_defaults(func=cmd_psoc_write_reg)
+
+    # == PSoC cold-boot attack ================================================
+    sp = sub.add_parser(
+        "psoc-locate-pin",
+        help="Search PSoC flash dump for PIN digit sequences",
+    )
+    sp.add_argument("dump", help="PSoC flash dump binary")
+    sp.add_argument("--pin-length", type=int, default=6, help="Expected PIN length (default 6)")
+    sp.set_defaults(func=cmd_psoc_locate_pin)
+
+    sp = sub.add_parser(
+        "psoc-dump-block",
+        help="Extract and display one 64-byte block from PSoC flash dump",
+    )
+    sp.add_argument("dump", help="PSoC flash dump binary")
+    sp.add_argument("--block", type=int, default=0, help="Block index (0-based)")
+    sp.add_argument("--block-size", type=int, default=64, help="Bytes per block (default 64)")
+    sp.set_defaults(func=cmd_psoc_dump_block)
+
+    sp = sub.add_parser(
+        "i2c-diff",
+        help="Diff two I2C bus captures to identify PIN-related register writes",
+    )
+    sp.add_argument("before", help="JSON file: I2C capture before PIN entry")
+    sp.add_argument("after", help="JSON file: I2C capture after PIN entry")
+    sp.set_defaults(func=cmd_i2c_diff)
 
     return p
 
