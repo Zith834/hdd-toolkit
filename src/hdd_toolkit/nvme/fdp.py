@@ -33,7 +33,12 @@ class FDPPlacementHint:
 
 @dataclass
 class RUHDescriptor:
-    """Descriptor for a single Reclaim Unit Handle reported by the device."""
+    """
+    Descriptor for a single Reclaim Unit Handle reported by the device.
+
+    Sources:
+      - NVMe TP 4146: Flexible Data Placement, Section 3: RUH descriptor format.
+    """
 
     ruh_id: int
     ruh_type: int

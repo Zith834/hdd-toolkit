@@ -23,7 +23,12 @@ class ZoneAction:
 
 
 class ZoneReportAction:
-    """Report Zones selection filter codes."""
+    """
+    Report Zones selection filter codes (ZRA field in Zone Management Receive).
+
+    Sources:
+      - NVMe ZNS TP 4053, Section 2.3: Zone Management Receive ZRA values.
+    """
 
     ALL = 0x00
     EMPTY = 0x01
