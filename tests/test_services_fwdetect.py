@@ -44,3 +44,52 @@ def test_integrity_report():
     data = bytes(512)
     result = FirmwareDetection.integrity_report(data, vendor="unknown")
     assert "verdict" in result
+
+
+def test_fw_readback_capability_hdd_blind():
+    result = FirmwareDetection.fw_readback_capability(drive_type="hdd")
+    assert result["capability"] == "blind"
+    assert result["paths"] == []
+    assert result["blind_reason"] != ""
+
+
+def test_fw_readback_capability_hdd_vsc_partial():
+    result = FirmwareDetection.fw_readback_capability(
+        has_vsc_readback=True, drive_type="hdd"
+    )
+    assert result["capability"] == "partial"
+    assert "vsc_overlay_readback" in result["paths"]
+
+
+def test_fw_readback_capability_ssd_full_jtag():
+    result = FirmwareDetection.fw_readback_capability(
+        has_jtag=True, drive_type="ssd"
+    )
+    assert result["capability"] == "full"
+    assert "jtag_spi_flash_dump" in result["paths"]
+    assert "checksum_verification" in result["detection_methods"]
+
+
+def test_fw_readback_capability_ssd_full_spi_clip():
+    result = FirmwareDetection.fw_readback_capability(
+        has_spi_clip=True, drive_type="ssd"
+    )
+    assert result["capability"] == "full"
+    assert "spi_clip_direct_read" in result["paths"]
+    assert "known_good_hash_comparison" in result["detection_methods"]
+
+
+def test_fw_readback_capability_hdd_jtag_partial():
+    result = FirmwareDetection.fw_readback_capability(
+        has_jtag=True, drive_type="hdd"
+    )
+    assert result["capability"] == "partial"
+    assert "jtag_memory_snapshot" in result["paths"]
+
+
+def test_fw_readback_capability_always_has_side_channel():
+    for drive_type in ("hdd", "ssd"):
+        result = FirmwareDetection.fw_readback_capability(drive_type=drive_type)
+        assert "timing_anomaly" in result["detection_methods"]
+        assert "current_draw_anomaly" in result["detection_methods"]
+

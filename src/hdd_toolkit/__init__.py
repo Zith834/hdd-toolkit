@@ -37,7 +37,9 @@ from hdd_toolkit.exploit.hotpatch import (
     build_delay_hook,
     deploy_hot_patch,
 )
+from hdd_toolkit.exploit.psoc_coldboot import ColdBootResult, I2CDiff, PSoCColdBoot
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
+from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
 from hdd_toolkit.firmware.detection import FirmwareDetection
 from hdd_toolkit.firmware.patcher import FirmwarePatch, FirmwarePatcher
 from hdd_toolkit.firmware.samsung import (
@@ -50,7 +52,9 @@ from hdd_toolkit.firmware.toshiba import ToshibaFirmwareImage, ToshibaFirmwarePa
 from hdd_toolkit.firmware.wd import LZHUFDecoder, WDFirmwareParser, WDSection
 from hdd_toolkit.hw.data_recovery import ReadRetryResult, SATADataRecoveryOps
 from hdd_toolkit.hw.hpa_dco import HPADCOAccess
+from hdd_toolkit.hw.issp import ISSPEngine, ISSPVector
 from hdd_toolkit.hw.jtag import OpenOCDBridge
+from hdd_toolkit.hw.spi_flash import SPIFlashCapture, SPIFlashInfo, SPITransaction
 from hdd_toolkit.hw.usb_bridge import USBBridgeInfo, USBToSATABridge
 from hdd_toolkit.nvme.admin import (
     NVMeAdminCmd,
@@ -80,12 +84,16 @@ __all__ = [
     "ATADevice",
     "ATAError",
     "ATASecurityCommands",
+    "ColdBootResult",
     "FirmwareDetection",
     "FirmwarePatch",
     "FirmwarePatcher",
     "FirmwareUpdateExploit",
     "HPADCOAccess",
     "HotPatchConfig",
+    "I2CDiff",
+    "ISSPEngine",
+    "ISSPVector",
     "LZHUFDecoder",
     "NVMeAdminCmd",
     "NVMeAdminPassthrough",
@@ -94,11 +102,15 @@ __all__ = [
     "NVMeTimingSideChannel",
     "NvmePassthruCmd",
     "OpenOCDBridge",
+    "PSoCColdBoot",
     "PatchTemplates",
     "ReadRetryResult",
     "SATADataRecoveryOps",
     "SATCmd",
     "SATLayer",
+    "SPIFlashCapture",
+    "SPIFlashInfo",
+    "SPITransaction",
     "SamsungAESInfo",
     "SamsungDMAHelper",
     "SamsungFirmwareParser",
@@ -115,6 +127,7 @@ __all__ = [
     "SeagateLODSection",
     "SeagateSAModule",
     "ServiceArea",
+    "SpareSectorForensics",
     "ToshibaFirmwareImage",
     "ToshibaFirmwareParser",
     "USBBridgeInfo",

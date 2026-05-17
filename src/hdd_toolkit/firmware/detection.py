@@ -176,6 +176,88 @@ class FirmwareDetection:
         }
 
     @staticmethod
+    def fw_readback_capability(
+        has_jtag: bool = False,
+        has_spi_clip: bool = False,
+        has_vsc_readback: bool = False,
+        drive_type: str = "hdd",
+    ) -> dict:
+        """
+        Probe whether the attached drive supports read-back of its firmware
+        area via any known path, and return a structured verdict.
+
+        For most spinning-rust HDDs the firmware resides in service tracks
+        on the platter, which are not accessible via any host interface.
+        This is not an implementation gap but a design constraint: as the
+        GReAT researchers noted, "for most hard drives there are functions
+        to write into the hardware firmware area but no functions to read
+        it back."
+
+        SSDs store firmware in SPI NOR flash which IS readable via a
+        JTAG-connected SPI clip or by attaching directly to the flash chip.
+
+        Parameters
+        ----------
+        has_jtag        : True if JTAG/OpenOCD is available and responds
+        has_spi_clip    : True if a SPI flash clip is attached (SSD only)
+        has_vsc_readback: True if the drive responds to VSC read-overlay
+                          commands that expose firmware module data
+        drive_type      : "hdd" (spinning rust) or "ssd" (NAND/NOR flash)
+
+        Returns
+        -------
+        dict with keys:
+          capability  -- "blind" | "partial" | "full"
+          paths       -- list of available read-back methods
+          blind_reason -- explanation when capability == "blind"
+          detection_methods -- list of applicable detection methods
+        """
+        paths: list[str] = []
+        detection_methods: list[str] = ["timing_anomaly", "current_draw_anomaly"]
+
+        if has_jtag:
+            if drive_type == "ssd":
+                paths.append("jtag_spi_flash_dump")
+                detection_methods.append("checksum_verification")
+            else:
+                paths.append("jtag_memory_snapshot")
+
+        if has_spi_clip and drive_type == "ssd":
+            paths.append("spi_clip_direct_read")
+            detection_methods.append("checksum_verification")
+            detection_methods.append("known_good_hash_comparison")
+
+        if has_vsc_readback:
+            paths.append("vsc_overlay_readback")
+            detection_methods.append("vsc_overlay_comparison")
+
+        if drive_type == "hdd" and not has_jtag and not has_vsc_readback:
+            capability = "blind"
+            blind_reason = (
+                "HDD firmware lives in service tracks on the platter; "
+                "no host-accessible read path exists without JTAG or "
+                "vendor-specific service commands"
+            )
+        elif paths:
+            full_read_paths = {"jtag_spi_flash_dump", "spi_clip_direct_read"}
+            capability = "full" if any(p in full_read_paths for p in paths) else "partial"
+            blind_reason = ""
+        else:
+            capability = "blind"
+            blind_reason = (
+                "No read-back path available; use timing and current-draw "
+                "side-channels for detection"
+            )
+
+        return {
+            "drive_type": drive_type,
+            "capability": capability,
+            "paths": paths,
+            "blind_reason": blind_reason,
+            "detection_methods": detection_methods,
+        }
+
+    @staticmethod
     def integrity_report(
         data: bytes,
         vendor: str,
