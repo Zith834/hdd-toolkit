@@ -10,7 +10,17 @@ from hdd_toolkit.ata.commands import (
     ATASecurityCommands,
 )
 from hdd_toolkit.ata.sat import SATCmd, SATLayer
+from hdd_toolkit.ata.security import ATAFrozenBypass, ATASecurityAccess, ATASecurityStatus
 from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
+from hdd_toolkit.ata.tcg_opal import (
+    TCGDiscovery0,
+    TCGDiscovery0Parser,
+    TCGFeatureCode,
+    TCGOpalClient,
+    TCGSession,
+    build_if_recv,
+    build_if_send,
+)
 from hdd_toolkit.ata.wd_vsc import WD_SA_ROM_MAP, WD_VSC, WDVSCClient
 from hdd_toolkit.cli.handlers import build_parser, main
 from hdd_toolkit.core.utils import (
@@ -58,6 +68,19 @@ from hdd_toolkit.hw.data_recovery import ReadRetryResult, SATADataRecoveryOps
 from hdd_toolkit.hw.hpa_dco import HPADCOAccess
 from hdd_toolkit.hw.issp import ISSPEngine, ISSPVector
 from hdd_toolkit.hw.jtag import OpenOCDBridge
+from hdd_toolkit.hw.sas import (
+    SCSICapacity,
+    SCSIDevice,
+    SCSIInquiryData,
+    SCSIOpcode,
+    SESElementStatus,
+    VPDPage,
+    build_inquiry_cdb,
+    build_read_capacity_10_cdb,
+    build_read_capacity_16_cdb,
+    build_receive_diagnostic_cdb,
+    parse_ses_enclosure_status,
+)
 from hdd_toolkit.hw.spi_flash import SPIFlashCapture, SPIFlashInfo, SPITransaction
 from hdd_toolkit.hw.usb_bridge import USBBridgeInfo, USBToSATABridge
 from hdd_toolkit.nvme.admin import (
@@ -67,6 +90,15 @@ from hdd_toolkit.nvme.admin import (
     NvmePassthruCmd,
 )
 from hdd_toolkit.nvme.envme import eNVMeIntegration
+from hdd_toolkit.nvme.hmb import (
+    HMBAllocation,
+    HMBAttackModel,
+    HMBDescriptor,
+    build_hmb_disable_cmd,
+    build_hmb_enable_cmd,
+    build_hmb_get_cmd,
+    parse_hmb_caps_from_identify,
+)
 from hdd_toolkit.nvme.ofabrics import NVMeOverFabrics
 from hdd_toolkit.nvme.sandisk import SanDiskNVMeVSC
 from hdd_toolkit.nvme.timing import NVMeTimingSideChannel
@@ -87,13 +119,19 @@ __all__ = [
     "ATACmd",
     "ATADevice",
     "ATAError",
+    "ATAFrozenBypass",
+    "ATASecurityAccess",
     "ATASecurityCommands",
+    "ATASecurityStatus",
     "ColdBootResult",
     "FirmwareDetection",
     "FirmwareIdentitySpoofDetector",
     "FirmwarePatch",
     "FirmwarePatcher",
     "FirmwareUpdateExploit",
+    "HMBAllocation",
+    "HMBAttackModel",
+    "HMBDescriptor",
     "HPADCOAccess",
     "HotPatchConfig",
     "I2CDiff",
@@ -127,16 +165,27 @@ __all__ = [
     "SamsungSafeUARTClient",
     "SamsungSection",
     "SanDiskNVMeVSC",
+    "SCSICapacity",
+    "SCSIDevice",
+    "SCSIInquiryData",
+    "SCSIOpcode",
     "SeagateF3SCTClient",
     "SeagateFWLoader",
     "SeagateLODSection",
     "SeagateSAModule",
+    "SESElementStatus",
     "ServiceArea",
     "SpareSectorForensics",
+    "TCGDiscovery0",
+    "TCGDiscovery0Parser",
+    "TCGFeatureCode",
+    "TCGOpalClient",
+    "TCGSession",
     "ToshibaFirmwareImage",
     "ToshibaFirmwareParser",
     "USBBridgeInfo",
     "USBToSATABridge",
+    "VPDPage",
     "WDFirmwareParser",
     "WDSection",
     "WDVSCClient",
@@ -149,7 +198,16 @@ __all__ = [
     "assemble_thumb",
     "benchmark_reads",
     "build_delay_hook",
+    "build_hmb_disable_cmd",
+    "build_hmb_enable_cmd",
+    "build_hmb_get_cmd",
+    "build_if_recv",
+    "build_if_send",
+    "build_inquiry_cdb",
     "build_parser",
+    "build_read_capacity_10_cdb",
+    "build_read_capacity_16_cdb",
+    "build_receive_diagnostic_cdb",
     "deploy_hot_patch",
     "diff_firmware",
     "dump_all_overlays",
@@ -161,6 +219,8 @@ __all__ = [
     "info",
     "main",
     "ok",
+    "parse_hmb_caps_from_identify",
+    "parse_ses_enclosure_status",
     "samsung_decode",
     "scan_strings",
     "warn",

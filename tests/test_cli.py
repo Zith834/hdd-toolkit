@@ -53,6 +53,10 @@ def test_parser_has_all_commands():
         "psoc-locate-pin", "psoc-dump-block",
         "i2c-diff",
         "fw-identity-check",
+        "opal-discovery", "opal-start-session",
+        "ata-security-check", "ata-security-build",
+        "scsi-inquiry", "scsi-read-capacity", "scsi-ses", "scsi-inquiry-cdb",
+        "nvme-hmb-caps", "nvme-hmb-attack", "nvme-hmb-enable-cmd",
     }
     missing = expected - seen
     extra = seen - expected

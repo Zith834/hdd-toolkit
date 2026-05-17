@@ -12,6 +12,8 @@ from hdd_toolkit.ata.commands import (
 )
 from hdd_toolkit.ata.sat import SATLayer
 from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
+from hdd_toolkit.ata.security import ATAFrozenBypass, ATASecurityStatus
+from hdd_toolkit.ata.tcg_opal import TCGDiscovery0Parser
 from hdd_toolkit.ata.wd_vsc import WD_SA_ROM_MAP, WDVSCClient
 from hdd_toolkit.core.utils import (
     _hex_dump,
@@ -49,10 +51,23 @@ from hdd_toolkit.hw.data_recovery import SATADataRecoveryOps
 from hdd_toolkit.hw.hpa_dco import HPADCOAccess
 from hdd_toolkit.hw.issp import ISSPEngine
 from hdd_toolkit.hw.jtag import OpenOCDBridge
+from hdd_toolkit.hw.sas import (
+    SCSICapacity,
+    SCSIDevice,
+    SCSIInquiryData,
+    build_inquiry_cdb,
+    parse_ses_enclosure_status,
+)
 from hdd_toolkit.hw.spi_flash import SPIFlashCapture
 from hdd_toolkit.hw.usb_bridge import USBToSATABridge
 from hdd_toolkit.nvme.admin import NVMeAdminPassthrough
 from hdd_toolkit.nvme.envme import eNVMeIntegration
+from hdd_toolkit.nvme.hmb import (
+    HMBAllocation,
+    HMBAttackModel,
+    HMBDescriptor,
+    parse_hmb_caps_from_identify,
+)
 from hdd_toolkit.nvme.ofabrics import NVMeOverFabrics
 from hdd_toolkit.nvme.sandisk import SanDiskNVMeVSC
 from hdd_toolkit.nvme.timing import NVMeTimingSideChannel
@@ -1453,6 +1468,259 @@ def cmd_fw_identity_check(args):
 
 
 # =============================================================================
+# TCG Opal / SED commands
+# =============================================================================
+
+
+def cmd_opal_discovery(args):
+    hdr(f"TCG Opal Level 0 Discovery: {args.file}")
+    data = Path(args.file).read_bytes()[:512]
+    if len(data) < 48:
+        data = data.ljust(512, b"\x00")
+    result = TCGDiscovery0Parser.parse(data)
+    info(f"SSC       : {result.ssc_name}")
+    info(f"BaseComID : 0x{result.base_com_id:04X}")
+    if result.tper:
+        t = result.tper
+        info(
+            f"TPer      : sync={t.sync} async={t.async_} bufmgmt={t.buffer_mgmt} "
+            f"comidmgmt={t.com_id_mgmt}"
+        )
+    if result.locking:
+        lk = result.locking
+        info(
+            f"Locking   : supported={lk.locking_supported} enabled={lk.locking_enabled} "
+            f"locked={lk.locked} mbr={lk.mbr_enabled} media_enc={lk.media_encryption}"
+        )
+    if result.geometry:
+        g = result.geometry
+        info(
+            f"Geometry  : align={g.align} lbs={g.logical_block_size} "
+            f"ag={g.alignment_granularity} lal={g.lowest_aligned_lba}"
+        )
+    if result.opal_v200:
+        o = result.opal_v200
+        info(
+            f"Opal 2.0  : base_comid=0x{o.base_com_id:04X} "
+            f"admins={o.num_locking_admin_auth} users={o.num_locking_user_auth}"
+        )
+    flags = []
+    for attr in (
+        "has_enterprise", "has_opal_v100", "has_single_user", "has_datastore",
+        "has_block_sid", "has_opalite", "has_pyrite_v100", "has_pyrite_v200",
+        "has_ruby", "has_data_removal",
+    ):
+        if getattr(result, attr):
+            flags.append(attr.replace("has_", ""))
+    if flags:
+        info(f"Features  : {', '.join(flags)}")
+    ok(f"Parsed {len(result.raw_features)} feature descriptor(s)")
+
+
+def cmd_opal_start_session(args):
+    from hdd_toolkit.ata.tcg_opal import TCGSession
+    hdr(f"TCG Opal Build StartSession packet: com_id=0x{args.com_id:04X}")
+    sp_uid = bytes.fromhex(args.sp_uid.replace(":", "").replace(" ", ""))
+    packet = TCGSession.build_start_session(
+        com_id=args.com_id,
+        hsn=args.hsn,
+        sp_uid=sp_uid,
+        read_write=not args.read_only,
+    )
+    out = args.output or "start_session.bin"
+    Path(out).write_bytes(packet)
+    ok(f"Wrote {len(packet)} bytes -- {out}")
+    hexdump(packet[:64])
+
+
+# =============================================================================
+# ATA Security Feature Set commands
+# =============================================================================
+
+
+def cmd_ata_security_check(args):
+    hdr(f"ATA Security Feature Set Status: {args.file}")
+    data = Path(args.file).read_bytes()
+    status = ATASecurityStatus.from_identify(data)
+    info(f"Status    : {status.describe()}")
+    info(f"Raw word  : 0x{status.raw_word:04X}")
+    bypass = ATAFrozenBypass.analyse(status)
+    if bypass["bypass_options"]:
+        warn(f"Bypass options: {', '.join(bypass['bypass_options'])}")
+        for rec in bypass["recommendations"]:
+            info(f"  {rec}")
+    else:
+        ok("No bypass options applicable")
+
+
+def cmd_ata_security_build(args):
+    from hdd_toolkit.ata.security import ATASecurityCmd, _build_password_sector
+    cmd_map = {
+        "freeze": ATASecurityCmd.SECURITY_FREEZE_LOCK,
+        "unlock": ATASecurityCmd.SECURITY_UNLOCK,
+        "set-password": ATASecurityCmd.SECURITY_SET_PASSWORD,
+        "erase-prepare": ATASecurityCmd.SECURITY_ERASE_PREPARE,
+        "erase-unit": ATASecurityCmd.SECURITY_ERASE_UNIT,
+        "disable-password": ATASecurityCmd.SECURITY_DISABLE_PASSWORD,
+    }
+    cmd_code = cmd_map[args.operation]
+    info(f"ATA Security command: {args.operation} (opcode 0x{cmd_code:02X})")
+
+    if args.operation in ("unlock", "set-password", "erase-unit", "disable-password"):
+        pw = args.password.encode() if args.password else b"\x00" * 32
+        sector = _build_password_sector(master=args.master, password=pw)
+        if args.output:
+            Path(args.output).write_bytes(sector)
+            ok(f"Password sector written to {args.output}")
+        hexdump(sector[:64])
+    else:
+        ok(f"Command 0x{cmd_code:02X} takes no data payload")
+
+
+# =============================================================================
+# SCSI/SAS commands
+# =============================================================================
+
+
+def cmd_scsi_inquiry(args):
+    hdr(f"SCSI INQUIRY: {args.device}")
+    with SCSIDevice(args.device) as dev:
+        data = dev.inquiry(evpd=args.evpd, page_code=args.page_code or 0)
+    if args.output:
+        Path(args.output).write_bytes(data)
+        ok(f"Raw data saved to {args.output}")
+    if not args.evpd:
+        inq = SCSIInquiryData.parse(data)
+        info(f"Device type : {inq.device_type_name}")
+        info(f"Vendor      : {inq.vendor_id}")
+        info(f"Product     : {inq.product_id}")
+        info(f"Revision    : {inq.product_rev}")
+        info(f"SPC version : {inq.spc_version}")
+    else:
+        hexdump(data[:128])
+
+
+def cmd_scsi_read_capacity(args):
+    hdr(f"SCSI READ CAPACITY: {args.device}")
+    with SCSIDevice(args.device) as dev:
+        if args.use_16:
+            data = dev.read_capacity_16()
+            cap = SCSICapacity.parse_16(data)
+        else:
+            data = dev.read_capacity_10()
+            cap = SCSICapacity.parse_10(data)
+    info(f"Last LBA    : {cap.last_lba} (0x{cap.last_lba:X})")
+    info(f"Block size  : {cap.block_length} bytes")
+    info(f"Capacity    : {cap.total_gb:.2f} GB ({cap.total_bytes} bytes)")
+
+
+def cmd_scsi_ses(args):
+    hdr(f"SCSI SES Enclosure Status: {args.device}")
+    with SCSIDevice(args.device) as dev:
+        data = dev.receive_diagnostic(page_code=0x02, alloc_len=4096)
+    if args.output:
+        Path(args.output).write_bytes(data)
+        ok(f"Raw SES page saved to {args.output}")
+    elements = parse_ses_enclosure_status(data)
+    if not elements:
+        warn("No SES element status descriptors found")
+        return
+    for e in elements:
+        line = (
+            f"  slot={e.slot_number:2d}  status={e.status_name:<16}  "
+            f"disabled={e.disabled}  swap={e.swap}"
+        )
+        if e.status_code == 0x02:
+            warn(line)
+        elif e.status_code == 0x01:
+            ok(line)
+        else:
+            info(line)
+    ok(f"Parsed {len(elements)} element(s)")
+
+
+def cmd_scsi_inquiry_cdb(args):
+    hdr("Build SCSI INQUIRY CDB")
+    cdb = build_inquiry_cdb(
+        evpd=args.evpd, page_code=args.page_code or 0, alloc_len=args.alloc_len
+    )
+    info(f"CDB ({len(cdb)} bytes): {cdb.hex(' ')}")
+    if args.output:
+        Path(args.output).write_bytes(cdb)
+        ok(f"Saved to {args.output}")
+
+
+# =============================================================================
+# NVMe HMB commands
+# =============================================================================
+
+
+def cmd_nvme_hmb_caps(args):
+    hdr(f"NVMe HMB Capabilities: {args.file}")
+    data = Path(args.file).read_bytes()
+    caps = parse_hmb_caps_from_identify(data)
+    if not caps["hmb_supported"]:
+        warn("Host Memory Buffer NOT supported by this controller")
+        return
+    ok("Host Memory Buffer supported")
+    info(f"HMMIN (minimum): {caps['hmmin_bytes']:,} bytes ({caps['hmmin_4k']} x 4 KiB)")
+    info(f"HMPRE (preferred): {caps['hmpre_bytes']:,} bytes ({caps['hmpre_4k']} x 4 KiB)")
+
+
+def cmd_nvme_hmb_attack(args):
+    hdr("NVMe HMB Attack Surface Model")
+    descriptors = []
+    for spec in args.descriptors:
+        parts = spec.split(":")
+        if len(parts) != 2:
+            err(f"Invalid descriptor spec '{spec}' (expected base:size_4k)")
+            sys.exit(1)
+        descriptors.append(
+            HMBDescriptor(
+                base_address=int(parts[0], 16),
+                size_4k=int(parts[1], 0),
+            )
+        )
+    alloc = HMBAllocation(descriptors=descriptors)
+    model = HMBAttackModel(alloc)
+    report = model.attack_report()
+
+    info(
+        f"Total HMB size  : {report['total_size_mb']:.2f} MB "
+        f"({report['total_size_bytes']} bytes)"
+    )
+    info(f"Descriptor count: {report['region_count']}")
+    for r in report["regions"]:
+        info(
+            f"  0x{r['base_address']:016X} -- 0x{r['end_address']:016X}"
+            f"  ({r['size_bytes']:,} bytes)"
+        )
+    if report["risk_flags"]:
+        warn(f"Risk flags: {', '.join(report['risk_flags'])}")
+    risk = report["risk_level"]
+    if risk == "high":
+        warn(f"Overall risk: {risk.upper()}")
+    else:
+        info(f"Overall risk: {risk}")
+
+
+def cmd_nvme_hmb_enable_cmd(args):
+    hdr("Build NVMe SET FEATURES (HMB enable) command")
+    from hdd_toolkit.nvme.hmb import build_hmb_enable_cmd as _build
+    descriptors = [HMBDescriptor(base_address=args.base_addr, size_4k=args.size_4k)]
+    alloc = HMBAllocation(descriptors=descriptors)
+    cmd = _build(alloc, descriptor_list_addr=args.base_addr, mr=args.mr)
+    info(f"Opcode  : 0x{cmd.opcode:02X} (SET FEATURES)")
+    info(f"CDW10   : 0x{cmd.cdw10:08X} (FID=0x{cmd.cdw10:02X})")
+    info(f"CDW11   : 0x{cmd.cdw11:08X} (EHM={cmd.cdw11 & 1} MR={(cmd.cdw11 >> 1) & 1})")
+    info(f"CDW12   : 0x{cmd.cdw12:08X} (HSIZE={cmd.cdw12} x 4 KiB)")
+    info(f"CDW13   : 0x{cmd.cdw13:08X} (HMDLAL low 32 bits)")
+    info(f"CDW14   : 0x{cmd.cdw14:08X} (HMDLAU high 32 bits)")
+    info(f"CDW15   : 0x{cmd.cdw15:08X} (HMDLEC={cmd.cdw15} descriptors)")
+    ok("SET FEATURES HMB command built")
+
+
+# =============================================================================
 # Argument parser
 # =============================================================================
 
@@ -2198,6 +2466,130 @@ def build_parser() -> argparse.ArgumentParser:
         help="512-byte SMART READ DATA response for serial cross-check",
     )
     sp.set_defaults(func=cmd_fw_identity_check)
+
+    # == TCG Opal / SED commands ==============================================
+    sp = sub.add_parser(
+        "opal-discovery",
+        help="Parse TCG Opal Level 0 Discovery response from a 512-byte dump",
+    )
+    sp.add_argument("file", help="512-byte IF_RECV Level 0 Discovery dump")
+    sp.set_defaults(func=cmd_opal_discovery)
+
+    sp = sub.add_parser(
+        "opal-start-session",
+        help="Build a TCG Opal StartSession ComPacket for ATA IF_SEND",
+    )
+    sp.add_argument(
+        "--com-id",
+        type=lambda x: int(x, 0),
+        required=True,
+        help="BaseComID from Level 0 Discovery (e.g. 0x0204)",
+    )
+    sp.add_argument(
+        "--sp-uid",
+        default="00000205 00000001",
+        help="8-byte SP UID hex string (default: Admin SP)",
+    )
+    sp.add_argument("--hsn", type=lambda x: int(x, 0), default=0x41, help="Host session number")
+    sp.add_argument("--read-only", action="store_true", help="Request read-only session")
+    sp.add_argument("-o", "--output", help="Output file (default: start_session.bin)")
+    sp.set_defaults(func=cmd_opal_start_session)
+
+    # == ATA Security Feature Set commands =====================================
+    sp = sub.add_parser(
+        "ata-security-check",
+        help="Parse ATA Security Feature Set status from an IDENTIFY DEVICE dump",
+    )
+    sp.add_argument("file", help="512-byte IDENTIFY DEVICE dump")
+    sp.set_defaults(func=cmd_ata_security_check)
+
+    sp = sub.add_parser(
+        "ata-security-build",
+        help="Build ATA Security Feature Set command payload (for passthrough scripting)",
+    )
+    sp.add_argument(
+        "operation",
+        choices=[
+            "freeze", "unlock", "set-password",
+            "erase-prepare", "erase-unit", "disable-password",
+        ],
+        help="Security operation",
+    )
+    sp.add_argument(
+        "--password",
+        help="Password string (max 32 bytes; for unlock/set/erase/disable)",
+    )
+    sp.add_argument("--master", action="store_true", help="Use master password slot")
+    sp.add_argument("-o", "--output", help="Save password sector payload to file")
+    sp.set_defaults(func=cmd_ata_security_build)
+
+    # == SCSI / SAS commands ==================================================
+    sp = sub.add_parser("scsi-inquiry", help="Issue SCSI INQUIRY to a SCSI/SAS device")
+    sp.add_argument("device", help="Device path, e.g. /dev/sg1 or /dev/sdb")
+    sp.add_argument("--evpd", action="store_true", help="Enable Vital Product Data")
+    sp.add_argument("--page-code", type=lambda x: int(x, 0), default=0, help="VPD page code (hex)")
+    sp.add_argument("-o", "--output", help="Save raw response to file")
+    sp.set_defaults(func=cmd_scsi_inquiry)
+
+    sp = sub.add_parser(
+        "scsi-read-capacity",
+        help="Issue SCSI READ CAPACITY to a SCSI/SAS device",
+    )
+    sp.add_argument("device", help="Device path, e.g. /dev/sg1 or /dev/sdb")
+    sp.add_argument("--use-16", action="store_true", help="Use READ CAPACITY (16) instead of (10)")
+    sp.set_defaults(func=cmd_scsi_read_capacity)
+
+    sp = sub.add_parser(
+        "scsi-ses",
+        help="Read and parse SES Enclosure Status page from a SCSI/SAS enclosure or drive",
+    )
+    sp.add_argument("device", help="SES device path, e.g. /dev/sg2")
+    sp.add_argument("-o", "--output", help="Save raw SES page to file")
+    sp.set_defaults(func=cmd_scsi_ses)
+
+    sp = sub.add_parser(
+        "scsi-inquiry-cdb",
+        help="Build a SCSI INQUIRY CDB without sending it (for use with other passthrough tools)",
+    )
+    sp.add_argument("--evpd", action="store_true", help="Enable Vital Product Data")
+    sp.add_argument("--page-code", type=lambda x: int(x, 0), default=0, help="VPD page code (hex)")
+    sp.add_argument("--alloc-len", type=int, default=96, help="Allocation length (default 96)")
+    sp.add_argument("-o", "--output", help="Save CDB bytes to file")
+    sp.set_defaults(func=cmd_scsi_inquiry_cdb)
+
+    # == NVMe HMB commands ====================================================
+    sp = sub.add_parser(
+        "nvme-hmb-caps",
+        help="Parse Host Memory Buffer capabilities from Identify Controller dump",
+    )
+    sp.add_argument("file", help="4096-byte Identify Controller data dump")
+    sp.set_defaults(func=cmd_nvme_hmb_caps)
+
+    sp = sub.add_parser(
+        "nvme-hmb-attack",
+        help="Model HMB attack surface for a given descriptor list",
+    )
+    sp.add_argument(
+        "descriptors",
+        nargs="+",
+        metavar="BASE:SIZE_4K",
+        help="HMB descriptor as base_address_hex:size_in_4k_pages (e.g. 0x80000000:16)",
+    )
+    sp.set_defaults(func=cmd_nvme_hmb_attack)
+
+    sp = sub.add_parser(
+        "nvme-hmb-enable-cmd",
+        help="Build NVMe SET FEATURES (HMB enable) command register dump",
+    )
+    sp.add_argument(
+        "--base-addr",
+        type=lambda x: int(x, 0),
+        required=True,
+        help="HMB base address (hex)",
+    )
+    sp.add_argument("--size-4k", type=int, required=True, help="HMB size in 4-KiB pages")
+    sp.add_argument("--mr", action="store_true", help="Set Memory Return bit")
+    sp.set_defaults(func=cmd_nvme_hmb_enable_cmd)
 
     return p
 
