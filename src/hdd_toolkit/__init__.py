@@ -10,7 +10,8 @@ from hdd_toolkit.ata.commands import (
     ATASecurityCommands,
 )
 from hdd_toolkit.ata.sat import SATCmd, SATLayer
-from hdd_toolkit.ata.wd_vsc import WD_VSC, WDVSCClient
+from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
+from hdd_toolkit.ata.wd_vsc import WD_SA_ROM_MAP, WD_VSC, WDVSCClient
 from hdd_toolkit.cli.handlers import build_parser, main
 from hdd_toolkit.core.utils import (
     _c,
@@ -72,6 +73,7 @@ from hdd_toolkit.samsung_mex.safe_uart import SamsungSafeUARTClient
 __all__ = [
     "ATA_PASS_THROUGH_EX",
     "SAMSUNG_840_EVO_FW_HISTORY",
+    "WD_SA_ROM_MAP",
     "WD_VSC",
     "ASM2362NVMeBridge",
     "ATACmd",
@@ -108,8 +110,10 @@ __all__ = [
     "SamsungSafeUARTClient",
     "SamsungSection",
     "SanDiskNVMeVSC",
+    "SeagateF3SCTClient",
     "SeagateFWLoader",
     "SeagateLODSection",
+    "SeagateSAModule",
     "ServiceArea",
     "ToshibaFirmwareImage",
     "ToshibaFirmwareParser",

@@ -16,11 +16,32 @@ class WD_VSC(IntEnum):  # noqa: N801
 
 
 WD_LOG_ADDR = 0xBE
+WD_DATA_LOG_ADDR = 0xBF
 ATA_SMART = 0xB0
 SMART_WRITE = 0xD6
 SMART_READ = 0xD5
 CYL_LO = 0x4F
 CYL_HI = 0xC2
+
+WD_SA_ROM_MAP: dict[int, int | None] = {
+    0x102: 0x0A,
+    0x103: 0x47,
+    0x104: 0x0D,
+    0x105: 0x30,
+    0x106: 0x4F,
+    0x107: 0x0B,
+    0x109: None,
+}
+"""Mapping from WD ROYL SA module IDs to their ROM counterpart module IDs.
+
+SA modules 0x102-0x109 are mirrors of specific ROM modules; regenerating the
+ROM from SA requires reassembling these pairs in the correct order.
+MOD 0x109 has no single ROM counterpart -- it contains the header, full ROM
+code blob, and module descriptor templates.
+
+Sources:
+  - forum.hddguru.com -- "Regenerating a WD ROYL ROM from SA MODs"
+"""
 
 
 class WDVSCClient:
@@ -59,7 +80,7 @@ class WDVSCClient:
         regs = {
             "features": SMART_READ,
             "count": 1,
-            "lba_lo": WD_LOG_ADDR,
+            "lba_lo": WD_DATA_LOG_ADDR,
             "cyl_lo": CYL_LO,
             "cyl_hi": CYL_HI,
             "dev": 0xA0,
@@ -68,6 +89,20 @@ class WDVSCClient:
         return self.dev.passthrough(regs, data_in_size=size)
 
     # == Public API ===========================================================
+
+    def enable_firmware_mode(self) -> None:
+        """
+        Send the WD ROYL VSC enable handshake to put the drive into firmware
+        mode.  This must precede other VSC commands on most WD ROYL families.
+        The handshake writes a zero-function-code buffer to log 0xBE; the
+        drive acknowledges by accepting subsequent VSC operations.
+
+        Sources:
+          - forum.hddguru.com -- "How can I access Service Area?"
+        """
+        buf = bytearray(512)
+        buf[0] = 0x00
+        self._smart_write(bytes(buf))
 
     def read_ram(self, addr: int, size: int) -> bytes:
         """Read `size` bytes from drive RAM at `addr`."""
