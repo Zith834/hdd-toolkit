@@ -23,6 +23,8 @@ def test_parser_has_all_commands():
         "samsung-safe-shell", "samsung-safe-read", "samsung-safe-write",
         "parse-seagate",
         "sa-probe", "sa-dump", "sa-hide", "sa-extract",
+        "seagate-sa-info", "seagate-sa-read", "seagate-sa-write", "seagate-sa-dump",
+        "wd-sa-info",
         "fwexploit-send", "fwexploit-activate",
         "nvme-bridge-sanitize", "patch-template",
         "toshiba-parse", "toshiba-nand",

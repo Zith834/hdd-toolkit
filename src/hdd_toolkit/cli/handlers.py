@@ -11,7 +11,8 @@ from hdd_toolkit.ata.commands import (
     ATASecurityCommands,
 )
 from hdd_toolkit.ata.sat import SATLayer
-from hdd_toolkit.ata.wd_vsc import WDVSCClient
+from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
+from hdd_toolkit.ata.wd_vsc import WD_SA_ROM_MAP, WDVSCClient
 from hdd_toolkit.core.utils import (
     _hex_dump,
     diff_firmware,
@@ -1042,6 +1043,78 @@ def cmd_jtag_regs(args):
         pass
 
 
+# == Seagate F3 Service Area commands =========================================
+
+
+def cmd_seagate_sa_read(args):
+    hdr(f"Seagate SA Read: drive={args.drive}  module=0x{int(args.module, 0):02X}")
+    with ATADevice(args.drive) as dev:
+        client = SeagateF3SCTClient(dev)
+        data = client.read_module(int(args.module, 0))
+    if not data or all(b == 0xFF for b in data):
+        warn("Empty response -- module may not exist on this drive")
+        return
+    out = args.output or f"seagate_sa_{int(args.module, 0):02X}.bin"
+    Path(out).write_bytes(data)
+    ok(f"Wrote {len(data)} bytes -- {out}")
+    hexdump(data[:256])
+
+
+def cmd_seagate_sa_write(args):
+    hdr(f"Seagate SA Write: drive={args.drive}  module=0x{int(args.module, 0):02X}")
+    data = Path(args.file).read_bytes()
+    info(f"Writing {len(data)} bytes to module 0x{int(args.module, 0):02X}=")
+    with ATADevice(args.drive) as dev:
+        client = SeagateF3SCTClient(dev)
+        client.write_module(int(args.module, 0), data)
+    ok("Write complete")
+
+
+def cmd_seagate_sa_dump(args):
+    hdr(f"Seagate SA Dump: drive={args.drive}  max_module=0x{args.max_module:02X}")
+    out_path = Path(args.out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    with ATADevice(args.drive) as dev:
+        client = SeagateF3SCTClient(dev)
+        modules = client.list_modules(args.max_module)
+    for mod_id, data in modules.items():
+        fname = out_path / f"seagate_sa_{mod_id:02X}.bin"
+        fname.write_bytes(data)
+        ok(f"Mod 0x{mod_id:02X}: {len(data)} B -- {fname.name}")
+    ok(f"Dumped {len(modules)} modules -- {out_path}/")
+
+
+def cmd_seagate_sa_info(args):
+    hdr("Seagate F3 Service Area Module Reference")
+    rows = [
+        (SeagateSAModule.ROM_RESIDENT_0, "ROM-resident module 0 (always loaded at power-on)"),
+        (SeagateSAModule.ROM_RESIDENT_1, "ROM-resident module 1 (always loaded)"),
+        (SeagateSAModule.PHYSICAL_OVERLAY_0, "Physical Overlay File 0"),
+        (SeagateSAModule.PHYSICAL_OVERLAY_1, "Physical Overlay File 1"),
+        (SeagateSAModule.PHYSICAL_OVERLAY_2, "Physical Overlay File 2"),
+        (SeagateSAModule.CONGEN_XML, "Packed CONGEN XML drive personality definition"),
+    ]
+    for mod, desc in rows:
+        info(f"  MOD 0x{mod:02X}  {desc}")
+
+
+def cmd_wd_sa_info(args):
+    hdr("WD ROYL SA-to-ROM Module Map")
+    info("SA Module  ROM Module  Description")
+    descs = {
+        0x102: "head map",
+        0x103: "(no standard name)",
+        0x104: "identity",
+        0x105: "(no standard name)",
+        0x106: "(no standard name)",
+        0x107: "module directory",
+        0x109: "header + ROM code + MOD templates",
+    }
+    for sa_mod, rom_mod in WD_SA_ROM_MAP.items():
+        rom_str = f"ROM 0x{rom_mod:02X}" if rom_mod is not None else "no single ROM counterpart"
+        info(f"  SA 0x{sa_mod:03X}  {rom_str:<18}  {descs.get(sa_mod, '')}")
+
+
 # == Seagate .lod commands ====================================================
 
 
@@ -1402,6 +1475,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("-o", "--output", help="Output file")
     sp.set_defaults(func=cmd_sa_extract)
+
+    # == Seagate F3 Service Area (SCT) commands ================================
+    sp = sub.add_parser("seagate-sa-info", help="Print Seagate F3 SA module ID reference")
+    sp.set_defaults(func=cmd_seagate_sa_info)
+
+    sp = sub.add_parser("seagate-sa-read", help="Read one Seagate F3 SA module via SCT")
+    add_drive_wrapped(sp)
+    sp.add_argument("--module", required=True, help="Module ID (hex, e.g. 0x1D)")
+    sp.add_argument("-o", "--output", help="Output file (default: seagate_sa_<id>.bin)")
+    sp.set_defaults(func=cmd_seagate_sa_read)
+
+    sp = sub.add_parser("seagate-sa-write", help="Write one Seagate F3 SA module via SCT")
+    add_drive_wrapped(sp)
+    sp.add_argument("--module", required=True, help="Module ID (hex)")
+    sp.add_argument("--file", required=True, help="Data file to write")
+    sp.set_defaults(func=cmd_seagate_sa_write)
+
+    sp = sub.add_parser("seagate-sa-dump", help="Dump all Seagate F3 SA modules to directory")
+    add_drive_wrapped(sp)
+    sp.add_argument("--out-dir", default="seagate_sa_dump")
+    sp.add_argument("--max-module", type=lambda x: int(x, 0), default=0x40)
+    sp.set_defaults(func=cmd_seagate_sa_dump)
+
+    sp = sub.add_parser("wd-sa-info", help="Print WD ROYL SA-to-ROM module map")
+    sp.set_defaults(func=cmd_wd_sa_info)
 
     # == Firmware update exploit (DOWNLOAD-MICROCODE) ==========================
     sp = sub.add_parser(
