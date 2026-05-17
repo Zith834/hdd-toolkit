@@ -52,6 +52,7 @@ def test_parser_has_all_commands():
         "psoc-sync", "psoc-read-sec", "psoc-read-srom", "psoc-write-reg",
         "psoc-locate-pin", "psoc-dump-block",
         "i2c-diff",
+        "fw-identity-check",
     }
     missing = expected - seen
     extra = seen - expected

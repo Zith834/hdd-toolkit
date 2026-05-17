@@ -31,6 +31,8 @@ A comprehensive tool for dumping, analyzing, patching, and hot-deploying HDD/SSD
   - ServiceArea: probe, dump, extract, hide
   - HotPatch: delay hook, code cave, benchmark
   - ASM2362 bridge attack: xram dump, firmware inject, sanitize
+  - Xbox 360 / HDDHackr identity spoof: security sector decode, IDENTIFY string analysis,
+    SMART serial cross-check, capacity plausibility (Read et al., 2013)
 
 ## Modules
 - `core`: Models, enums, utilities (zero project imports)
