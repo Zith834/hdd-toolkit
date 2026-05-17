@@ -124,10 +124,9 @@ def test_flash_channel_read_page_calls_ocd():
     ch = SamsungFlashChannel(ocd, 0)
     with patch("time.time", side_effect=[0, 0, 10]):
         ch.read_page(0x100, 0x05)
-    ocd.halt.assert_called()
-    ocd.resume.assert_called()
-    calls = [str(c) for c in ocd.cmd.call_args_list]
-    assert any("FCH_CMD" in c or "3C00" in c.upper() or "READ_PAGE" in c or "07" in c.lower() for c in calls) or ocd.cmd.called
+    ocd.halt.assert_called_once()
+    ocd.resume.assert_called_once()
+    assert ocd.cmd.call_count >= 6
 
 
 def test_flash_channel_write_page_calls_ocd():
@@ -180,8 +179,8 @@ def test_flash_channel_dispatch_value():
     ch = SamsungFlashChannel(ocd, 5)
     ch._set_dispatch(SamsungFlashChannel.ZONE_CHIP1, SamsungFlashChannel.OP_READ)
     expected_dispatch = 0x3F | (5 << 10)
-    calls = [str(c) for c in ocd.cmd.call_args_list]
-    assert any(f"{expected_dispatch:08X}" in c.upper() for c in calls)
+    from unittest.mock import call
+    ocd.cmd.assert_any_call(f"mww 0x{SamsungMEXMap.FLASH_DISPATCH:08X} 0x{expected_dispatch:08X}")
 
 
 def test_flash_channel_read_sa_page():
@@ -211,6 +210,8 @@ def test_flash_channel_pbpn_encoding():
     with patch("time.time", side_effect=[0, 0, 10]):
         ch.read_page(0xAB, 0xCD)
     expected_pbpn = (0xAB << 8) | 0xCD
-    calls = [str(c) for c in ocd.cmd.call_args_list]
-    assert any(f"{expected_pbpn:08X}" in c.upper() for c in calls)
+    from unittest.mock import call
+    ocd.cmd.assert_any_call(
+        f"mww 0x{ch._fch(SamsungMEXMap.FCH_PBPN):08X} 0x{expected_pbpn:08X}"
+    )
 

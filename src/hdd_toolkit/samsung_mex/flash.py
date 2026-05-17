@@ -52,7 +52,7 @@ class SamsungFlashChannel:
 
     M = SamsungMEXMap
 
-    def __init__(self, ocd: "OpenOCDBridge", channel: int):
+    def __init__(self, ocd: OpenOCDBridge, channel: int):
         if not (0 <= channel <= 7):
             raise ValueError(f"Channel must be 0-7, got {channel}")
         self.ocd = ocd
