@@ -27,6 +27,7 @@ from hdd_toolkit.core.utils import (
     scan_strings,
     warn,
 )
+from hdd_toolkit.exploit.ata_password_oracle import ATAMasterPasswordOracle
 from hdd_toolkit.exploit.bridge_attack import ASM2362NVMeBridge
 from hdd_toolkit.exploit.fw_update import FirmwareUpdateExploit
 from hdd_toolkit.exploit.hotpatch import (
@@ -36,8 +37,13 @@ from hdd_toolkit.exploit.hotpatch import (
     deploy_hot_patch,
 )
 from hdd_toolkit.exploit.psoc_coldboot import PSoCColdBoot
+from hdd_toolkit.exploit.rtl9210_bridge import RTL9210Bridge
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
 from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
+from hdd_toolkit.exploit.write_cache_fault import (
+    WriteCacheFaultModel,
+    plan_power_loss_fault,
+)
 from hdd_toolkit.exploit.xbox360_firmware_spoof import (
     FirmwareIdentitySpoofDetector,
 )
@@ -1721,6 +1727,151 @@ def cmd_nvme_hmb_enable_cmd(args):
 
 
 # =============================================================================
+# RTL9210 bridge commands
+# =============================================================================
+
+
+def cmd_rtl9210_info(args):
+    hdr("RTL9210B Bridge Capability Summary")
+    report = RTL9210Bridge.probe_info()
+    info(f"VID     : 0x{report['vid']:04X}")
+    info(f"PID(s)  : {' '.join(f'0x{p:04X}' for p in report['pid_variants'])}")
+    info(f"Opcodes : {list(report['vendor_opcodes'].keys())}")
+    info(f"NVMe ASQ base : 0x{report['nvme_asq_xram_base']:04X}  depth={report['nvme_asq_depth']}")
+    if not report["sig_check"]:
+        warn("No firmware signature verification on SPI write (0xE3)")
+
+
+def cmd_rtl9210_read_reg(args):
+    hdr(f"RTL9210B XRAM read: addr=0x{int(args.addr, 0):04X} len={args.length}")
+    cdb = RTL9210Bridge.build_read_register_cdb(int(args.addr, 0), args.length)
+    info(f"CDB ({len(cdb)} bytes): {cdb.hex(' ')}")
+    if args.output:
+        Path(args.output).write_bytes(cdb)
+        ok(f"Saved to {args.output}")
+
+
+def cmd_rtl9210_write_reg(args):
+    hdr(f"RTL9210B XRAM write: addr=0x{int(args.addr, 0):04X} value=0x{int(args.value, 0):02X}")
+    cdb = RTL9210Bridge.build_write_register_cdb(int(args.addr, 0), int(args.value, 0))
+    info(f"CDB ({len(cdb)} bytes): {cdb.hex(' ')}")
+    if args.output:
+        Path(args.output).write_bytes(cdb)
+        ok(f"Saved to {args.output}")
+
+
+def cmd_rtl9210_read_spi(args):
+    hdr(f"RTL9210B SPI flash read: offset=0x{int(args.offset, 0):X} len={args.length}")
+    cdb = RTL9210Bridge.build_read_spi_cdb(int(args.offset, 0), args.length)
+    info(f"CDB ({len(cdb)} bytes): {cdb.hex(' ')}")
+    if args.output:
+        Path(args.output).write_bytes(cdb)
+        ok(f"Saved to {args.output}")
+
+
+def cmd_rtl9210_inject_sanitize(args):
+    hdr(f"RTL9210B inject Sanitize Block Erase (XRAM slot {args.slot})")
+    cmd = RTL9210Bridge.inject_sanitize(slot=args.slot)
+    info(f"NVMe SQ entry ({len(cmd)} bytes): {cmd[:16].hex(' ')} ...")
+    if args.output:
+        Path(args.output).write_bytes(cmd)
+        ok(f"Saved to {args.output}")
+
+
+# =============================================================================
+# ATA master password oracle commands
+# =============================================================================
+
+
+def cmd_ata_master_pw_oracle(args):
+    hdr(f"ATA Master Password Oracle: {args.file}")
+    data = Path(args.file).read_bytes()
+    model = args.model or ""
+    plan = ATAMasterPasswordOracle.oracle_plan(
+        model_string=model,
+        identify_data=data,
+        erase_mode=args.erase_mode,
+    )
+    if "error" in plan:
+        err(plan["error"])
+        return
+    info(f"Model          : {plan['model']}")
+    info(f"Security level : {plan['security_level']}")
+    info(f"Attempt count  : {plan['attempt_count']}")
+    info(f"Safe to proceed: {plan['safe_to_proceed']}")
+    for w in plan["warnings"]:
+        warn(w)
+    if not plan["trial_list"]:
+        warn("No trial passwords available")
+        return
+    ok(f"Trial passwords ({len(plan['trial_list'])}):")
+    for t in plan["trial_list"]:
+        info(f"  [{t['label']}]  {t['notes']}")
+        info(f"    password hex: {t['password_hex']}")
+
+
+def cmd_ata_master_pw_detect(args):
+    hdr(f"ATA Master Password Detection: model={args.model}")
+    result = ATAMasterPasswordOracle.detect_default_master_pw(
+        identify_data=bytes(512),
+        model_string=args.model,
+    )
+    if result["likely_default"]:
+        warn("Drive model matches known default master password pattern")
+        top = result["top_candidate"]
+        if top:
+            info(f"Top candidate: [{top['label']}]")
+            info(f"  Password hex: {top['password_hex']}")
+            info(f"  Notes: {top['notes']}")
+    else:
+        ok("No default master password match found for this model")
+    info(f"Total candidates: {len(result['all_candidates'])}")
+
+
+# =============================================================================
+# Volatile write cache fault analysis commands
+# =============================================================================
+
+
+def cmd_vwc_analyse(args):
+    hdr(f"Volatile Write Cache Analysis: {args.file}")
+    data = Path(args.file).read_bytes()
+    result = WriteCacheFaultModel.analyse(data)
+    info(f"Status: {result['description']}")
+    info(f"Risk  : {result['risk_level'].upper()}")
+    if result["attack_scenarios"]:
+        warn(f"Attack scenarios: {', '.join(result['attack_scenarios'])}")
+    for rec in result["recommendations"]:
+        info(f"  {rec}")
+
+
+def cmd_vwc_disable_cmd(args):
+    hdr("ATA SET FEATURES 0x82 (disable volatile write cache)")
+    regs = WriteCacheFaultModel.build_ata_disable_vwc_regs()
+    info(f"ATA cmd=0x{regs['cmd']:02X} features=0x{regs['features']:02X}")
+    ok("Issue this via ATA passthrough to disable the drive VWC")
+
+
+def cmd_vwc_fault_plan(args):
+    hdr(f"Power-Loss Fault Injection Plan: LBA=0x{int(args.lba, 0):X}")
+    plan = plan_power_loss_fault(
+        target_lba=int(args.lba, 0),
+        write_count=args.count,
+        power_cut_delay_ms=args.delay_ms,
+        flush_before_cut=args.flush,
+    )
+    info(f"Target LBA         : 0x{plan.target_lba:X}")
+    info(f"Write count        : {plan.write_count} sectors")
+    info(f"Power cut delay    : {plan.power_cut_delay_ms:.1f} ms")
+    info(f"Flush before cut   : {plan.flush_before_cut}")
+    info(f"Expected outcome   : {plan.expected_outcome}")
+    cache_mb = args.cache_mb if hasattr(args, "cache_mb") and args.cache_mb else 4
+    rate_mb_s = args.rate_mb_s if hasattr(args, "rate_mb_s") and args.rate_mb_s else 100.0
+    window = WriteCacheFaultModel.estimate_fault_window_ms(cache_mb, rate_mb_s)
+    info(f"Estimated fault window ({cache_mb} MiB cache @ {rate_mb_s} MiB/s): {window:.1f} ms")
+
+
+# =============================================================================
 # Argument parser
 # =============================================================================
 
@@ -2590,6 +2741,98 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--size-4k", type=int, required=True, help="HMB size in 4-KiB pages")
     sp.add_argument("--mr", action="store_true", help="Set Memory Return bit")
     sp.set_defaults(func=cmd_nvme_hmb_enable_cmd)
+
+    # == RTL9210 bridge commands ==============================================
+    sp = sub.add_parser("rtl9210-info", help="Print RTL9210B bridge capability summary")
+    sp.set_defaults(func=cmd_rtl9210_info)
+
+    sp = sub.add_parser("rtl9210-read-reg", help="Build RTL9210B XRAM/MMIO read CDB (0xF8)")
+    sp.add_argument("--addr", required=True, help="Register address (hex)")
+    sp.add_argument("--length", type=int, default=4, help="Bytes to read (1-255, default 4)")
+    sp.add_argument("-o", "--output", help="Save CDB to file")
+    sp.set_defaults(func=cmd_rtl9210_read_reg)
+
+    sp = sub.add_parser("rtl9210-write-reg", help="Build RTL9210B XRAM/MMIO write CDB (0xF9)")
+    sp.add_argument("--addr", required=True, help="Register address (hex)")
+    sp.add_argument("--value", required=True, help="Byte value (hex)")
+    sp.add_argument("-o", "--output", help="Save CDB to file")
+    sp.set_defaults(func=cmd_rtl9210_write_reg)
+
+    sp = sub.add_parser("rtl9210-read-spi", help="Build RTL9210B SPI flash read CDB (0xE2)")
+    sp.add_argument("--offset", default="0", help="Flash byte offset (hex)")
+    sp.add_argument("--length", type=int, default=512, help="Bytes to read (default 512)")
+    sp.add_argument("-o", "--output", help="Save CDB to file")
+    sp.set_defaults(func=cmd_rtl9210_read_spi)
+
+    sp = sub.add_parser(
+        "rtl9210-inject-sanitize",
+        help="Build RTL9210B XRAM-injected NVMe Sanitize Block Erase command",
+    )
+    sp.add_argument("--slot", type=int, default=0, help="Admin SQ slot (0-3, default 0)")
+    sp.add_argument("-o", "--output", help="Save 64-byte NVMe SQ entry to file")
+    sp.set_defaults(func=cmd_rtl9210_inject_sanitize)
+
+    # == ATA master password oracle commands ==================================
+    sp = sub.add_parser(
+        "ata-master-pw-oracle",
+        help="Plan ATA master password oracle attack from IDENTIFY DEVICE dump",
+    )
+    sp.add_argument("file", help="512-byte IDENTIFY DEVICE dump")
+    sp.add_argument("--model", default="", help="Drive model string (override)")
+    sp.add_argument(
+        "--erase-mode",
+        action="store_true",
+        help="Plan SECURITY ERASE UNIT instead of SECURITY UNLOCK",
+    )
+    sp.set_defaults(func=cmd_ata_master_pw_oracle)
+
+    sp = sub.add_parser(
+        "ata-master-pw-detect",
+        help="Detect if a drive model has a known default master password",
+    )
+    sp.add_argument("model", help="Drive model string (from IDENTIFY DEVICE words 27-46)")
+    sp.set_defaults(func=cmd_ata_master_pw_detect)
+
+    # == Volatile write cache fault commands ==================================
+    sp = sub.add_parser(
+        "vwc-analyse",
+        help="Analyse drive IDENTIFY DEVICE dump for volatile write cache fault risk",
+    )
+    sp.add_argument("file", help="512-byte IDENTIFY DEVICE dump")
+    sp.set_defaults(func=cmd_vwc_analyse)
+
+    sp = sub.add_parser(
+        "vwc-disable-cmd",
+        help="Print ATA SET FEATURES 0x82 (disable volatile write cache) register values",
+    )
+    sp.set_defaults(func=cmd_vwc_disable_cmd)
+
+    sp = sub.add_parser(
+        "vwc-fault-plan",
+        help="Generate a power-loss fault injection plan for volatile write cache",
+    )
+    sp.add_argument("--lba", required=True, help="Target starting LBA (hex)")
+    sp.add_argument("--count", type=int, default=64, help="Number of sectors to write (default 64)")
+    sp.add_argument(
+        "--delay-ms",
+        type=float,
+        default=50.0,
+        help="Milliseconds after first write to cut power (default 50)",
+    )
+    sp.add_argument("--flush", action="store_true", help="Flush cache before cut (baseline mode)")
+    sp.add_argument(
+        "--cache-mb",
+        type=int,
+        default=4,
+        help="Estimated drive cache size in MiB for window estimation (default 4)",
+    )
+    sp.add_argument(
+        "--rate-mb-s",
+        type=float,
+        default=100.0,
+        help="Drive sustained write rate in MiB/s (default 100)",
+    )
+    sp.set_defaults(func=cmd_vwc_fault_plan)
 
     return p
 

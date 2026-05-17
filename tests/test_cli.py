@@ -57,6 +57,10 @@ def test_parser_has_all_commands():
         "ata-security-check", "ata-security-build",
         "scsi-inquiry", "scsi-read-capacity", "scsi-ses", "scsi-inquiry-cdb",
         "nvme-hmb-caps", "nvme-hmb-attack", "nvme-hmb-enable-cmd",
+        "rtl9210-info", "rtl9210-read-reg", "rtl9210-write-reg",
+        "rtl9210-read-spi", "rtl9210-inject-sanitize",
+        "ata-master-pw-oracle", "ata-master-pw-detect",
+        "vwc-analyse", "vwc-disable-cmd", "vwc-fault-plan",
     }
     missing = expected - seen
     extra = seen - expected

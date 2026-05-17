@@ -10,8 +10,8 @@ from hdd_toolkit.ata.commands import (
     ATASecurityCommands,
 )
 from hdd_toolkit.ata.sat import SATCmd, SATLayer
-from hdd_toolkit.ata.security import ATAFrozenBypass, ATASecurityAccess, ATASecurityStatus
 from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
+from hdd_toolkit.ata.security import ATAFrozenBypass, ATASecurityAccess, ATASecurityStatus
 from hdd_toolkit.ata.tcg_opal import (
     TCGDiscovery0,
     TCGDiscovery0Parser,
@@ -36,6 +36,7 @@ from hdd_toolkit.core.utils import (
     scan_strings,
     warn,
 )
+from hdd_toolkit.exploit.ata_password_oracle import ATAMasterPasswordOracle, MasterPasswordTable
 from hdd_toolkit.exploit.bridge_attack import ASM2362NVMeBridge
 from hdd_toolkit.exploit.fw_update import FirmwareUpdateExploit
 from hdd_toolkit.exploit.hotpatch import (
@@ -48,8 +49,16 @@ from hdd_toolkit.exploit.hotpatch import (
     deploy_hot_patch,
 )
 from hdd_toolkit.exploit.psoc_coldboot import ColdBootResult, I2CDiff, PSoCColdBoot
+from hdd_toolkit.exploit.rtl9210_bridge import RTL9210Bridge, RTL9210FirmwareInfo
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
 from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
+from hdd_toolkit.exploit.write_cache_fault import (
+    PowerLossFaultPlan,
+    VWCState,
+    VWCStatus,
+    WriteCacheFaultModel,
+    plan_power_loss_fault,
+)
 from hdd_toolkit.exploit.xbox360_firmware_spoof import (
     FirmwareIdentitySpoofDetector,
     Xbox360SecuritySector,
@@ -120,6 +129,7 @@ __all__ = [
     "ATADevice",
     "ATAError",
     "ATAFrozenBypass",
+    "ATAMasterPasswordOracle",
     "ATASecurityAccess",
     "ATASecurityCommands",
     "ATASecurityStatus",
@@ -138,6 +148,7 @@ __all__ = [
     "ISSPEngine",
     "ISSPVector",
     "LZHUFDecoder",
+    "MasterPasswordTable",
     "NVMeAdminCmd",
     "NVMeAdminPassthrough",
     "NVMeDevice",
@@ -147,10 +158,18 @@ __all__ = [
     "OpenOCDBridge",
     "PSoCColdBoot",
     "PatchTemplates",
+    "PowerLossFaultPlan",
+    "RTL9210Bridge",
+    "RTL9210FirmwareInfo",
     "ReadRetryResult",
     "SATADataRecoveryOps",
     "SATCmd",
     "SATLayer",
+    "SCSICapacity",
+    "SCSIDevice",
+    "SCSIInquiryData",
+    "SCSIOpcode",
+    "SESElementStatus",
     "SPIFlashCapture",
     "SPIFlashInfo",
     "SPITransaction",
@@ -165,15 +184,10 @@ __all__ = [
     "SamsungSafeUARTClient",
     "SamsungSection",
     "SanDiskNVMeVSC",
-    "SCSICapacity",
-    "SCSIDevice",
-    "SCSIInquiryData",
-    "SCSIOpcode",
     "SeagateF3SCTClient",
     "SeagateFWLoader",
     "SeagateLODSection",
     "SeagateSAModule",
-    "SESElementStatus",
     "ServiceArea",
     "SpareSectorForensics",
     "TCGDiscovery0",
@@ -186,9 +200,12 @@ __all__ = [
     "USBBridgeInfo",
     "USBToSATABridge",
     "VPDPage",
+    "VWCState",
+    "VWCStatus",
     "WDFirmwareParser",
     "WDSection",
     "WDVSCClient",
+    "WriteCacheFaultModel",
     "Xbox360SecuritySector",
     "__version__",
     "__version_info__",
@@ -221,6 +238,7 @@ __all__ = [
     "ok",
     "parse_hmb_caps_from_identify",
     "parse_ses_enclosure_status",
+    "plan_power_loss_fault",
     "samsung_decode",
     "scan_strings",
     "warn",
