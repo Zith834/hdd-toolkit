@@ -50,6 +50,7 @@ from hdd_toolkit.nvme.sandisk import SanDiskNVMeVSC
 from hdd_toolkit.nvme.timing import NVMeTimingSideChannel
 from hdd_toolkit.samsung_mex.aes import SamsungAESInfo
 from hdd_toolkit.samsung_mex.dma import SamsungDMAHelper
+from hdd_toolkit.samsung_mex.flash import SamsungFlashChannel
 from hdd_toolkit.samsung_mex.gpio import SamsungGPIO
 from hdd_toolkit.samsung_mex.memory_map import SamsungMEXMap
 from hdd_toolkit.samsung_mex.ncq import SamsungNCQParser
@@ -780,6 +781,51 @@ def cmd_samsung_ftl_preload(args):
         SamsungDMAHelper(ocd).preload_ftl_map(args.sata_dev, args.size_gb)
 
 
+def cmd_samsung_flash_read(args):
+    hdr(
+        f"Samsung Flash Read: ch{args.channel} "
+        f"block=0x{int(args.block, 0):X} page=0x{int(args.page, 0):X}"
+    )
+    mem_addr = int(args.mem_addr, 0) if args.mem_addr else SamsungMEXMap.DMA_SATA_WINDOW
+    with _ocd_args(args) as ocd:
+        ch = SamsungFlashChannel(ocd, args.channel)
+        ch.read_page(int(args.block, 0), int(args.page, 0), mem_addr=mem_addr)
+        if args.sata_dev:
+            out = args.output or f"flash_ch{args.channel}_b{int(args.block,0):X}_p{int(args.page,0):X}.bin"
+            sectors = 16
+            import subprocess
+            subprocess.run(
+                ["dd", f"if={args.sata_dev}", f"of={out}", "bs=512", f"count={sectors}"],
+                check=True,
+            )
+            ok(f"Saved {sectors * 512} bytes -- {out}")
+
+
+def cmd_samsung_flash_write(args):
+    hdr(
+        f"Samsung Flash Write: ch{args.channel} "
+        f"block=0x{int(args.block, 0):X} page=0x{int(args.page, 0):X}"
+    )
+    mem_addr = int(args.mem_addr, 0)
+    with _ocd_args(args) as ocd:
+        ch = SamsungFlashChannel(ocd, args.channel)
+        ch.write_page(int(args.block, 0), int(args.page, 0), mem_addr=mem_addr)
+
+
+def cmd_samsung_flash_erase(args):
+    hdr(f"Samsung Flash Erase: ch{args.channel} block=0x{int(args.block, 0):X}")
+    with _ocd_args(args) as ocd:
+        ch = SamsungFlashChannel(ocd, args.channel)
+        ch.erase_block(int(args.block, 0))
+
+
+def cmd_samsung_flash_integrity(args):
+    hdr(f"Samsung Flash Integrity Check: ch{args.channel}")
+    with _ocd_args(args) as ocd:
+        ch = SamsungFlashChannel(ocd, args.channel)
+        ch.check_integrity()
+
+
 def cmd_samsung_safe_shell(args):
     with SamsungSafeUARTClient(args.port) as uart:
         uart.interactive_shell()
@@ -809,38 +855,6 @@ def cmd_samsung_safe_write(args):
                 ok(f"Verified: 0x{addr:08X} = 0x{rb:08X} =")
             else:
                 err(f"Mismatch: expected 0x{value:08X} got 0x{rb:08X}")
-
-    hdr(f"Parse Firmware: {args.file}")
-    data = Path(args.file).read_bytes()
-    info(f"File size: {len(data)} bytes  ({len(data) / 1024:.1f} KB)")
-
-    if args.format == "wd":
-        sections = WDFirmwareParser().parse(data)
-        for s in sections:
-            pass
-
-        if args.extract:
-            out = Path(args.extract)
-            out.mkdir(exist_ok=True)
-            for s in sections:
-                fname = out / f"section_{s.index:02d}_{s.base_addr:08X}.bin"
-                fname.write_bytes(s.decompressed_data)
-                ok(f"Wrote {fname}")
-
-    elif args.format == "samsung":
-        sections = SamsungFirmwareParser().parse(data)
-        for s in sections:
-            pass
-
-        if args.extract:
-            out = Path(args.extract)
-            out.mkdir(exist_ok=True)
-            for s in sections:
-                fname = out / f"section_{s.index:02d}_{s.base_addr:08X}.bin"
-                fname.write_bytes(s.data)
-                ok(f"Wrote {fname}")
-    else:
-        err(f"Unknown format: {args.format}  (choose: wd, samsung)")
 
 
 def cmd_parse_firmware(args):
@@ -1303,7 +1317,55 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=4444)
     sp.set_defaults(func=cmd_samsung_ftl_preload)
 
-    # == Seagate .lod firmware commands ========================================
+    # == Samsung MEX (840 EVO) - NAND flash channel commands ===================
+    sp = sub.add_parser(
+        "samsung-flash-read",
+        help="Read one NAND page via JTAG flash channel (TheMissingManual)",
+    )
+    add_ocd(sp)
+    sp.add_argument("--channel", type=int, required=True, help="Flash channel 0-7")
+    sp.add_argument("--block", required=True, help="Physical block number (hex)")
+    sp.add_argument("--page", required=True, help="Page within block (hex, 0-255)")
+    sp.add_argument(
+        "--mem-addr",
+        metavar="ADDR",
+        help="Destination RAM address (hex; default DMA_SATA_WINDOW 0x85833000)",
+    )
+    sp.add_argument("--sata-dev", metavar="DEV", help="Block device for dd exfiltration")
+    sp.add_argument("-o", "--output", help="Output filename for dd (default auto)")
+    sp.set_defaults(func=cmd_samsung_flash_read)
+
+    sp = sub.add_parser(
+        "samsung-flash-write",
+        help="Write one NAND page via JTAG flash channel (block must be erased first)",
+    )
+    add_ocd(sp)
+    sp.add_argument("--channel", type=int, required=True, help="Flash channel 0-7")
+    sp.add_argument("--block", required=True, help="Physical block number (hex)")
+    sp.add_argument("--page", required=True, help="Page within block (hex, 0-255)")
+    sp.add_argument(
+        "--mem-addr", required=True, metavar="ADDR", help="Source RAM address (hex)"
+    )
+    sp.set_defaults(func=cmd_samsung_flash_write)
+
+    sp = sub.add_parser(
+        "samsung-flash-erase",
+        help="Erase a NAND block via JTAG flash channel",
+    )
+    add_ocd(sp)
+    sp.add_argument("--channel", type=int, required=True, help="Flash channel 0-7")
+    sp.add_argument("--block", required=True, help="Physical block number (hex)")
+    sp.set_defaults(func=cmd_samsung_flash_erase)
+
+    sp = sub.add_parser(
+        "samsung-flash-integrity",
+        help="Run channel integrity check via JTAG (result at 0x20300050+ch, 0xEC=OK)",
+    )
+    add_ocd(sp)
+    sp.add_argument("--channel", type=int, required=True, help="Flash channel 0-7")
+    sp.set_defaults(func=cmd_samsung_flash_integrity)
+
+
     sp = sub.add_parser("parse-seagate", help="Parse Seagate .lod firmware file")
     sp.add_argument("file")
     sp.add_argument("--extract", metavar="DIR", help="Extract sections to directory")

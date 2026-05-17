@@ -16,6 +16,7 @@ from hdd_toolkit.nvme.sandisk import SanDiskNVMeVSC
 from hdd_toolkit.nvme.timing import NVMeTimingSideChannel
 from hdd_toolkit.samsung_mex.aes import SamsungAESInfo
 from hdd_toolkit.samsung_mex.dma import SamsungDMAHelper
+from hdd_toolkit.samsung_mex.flash import SamsungFlashChannel
 from hdd_toolkit.samsung_mex.gpio import SamsungGPIO
 from hdd_toolkit.samsung_mex.ncq import SamsungNCQParser
 from hdd_toolkit.samsung_mex.safe_uart import SamsungSafeUARTClient
@@ -37,6 +38,7 @@ __all__ = [
     "SamsungAESInfo",
     "SamsungDMAHelper",
     "SamsungFirmwareParser",
+    "SamsungFlashChannel",
     "SamsungGPIO",
     "SamsungNCQParser",
     "SamsungSafeUARTClient",

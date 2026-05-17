@@ -1,6 +1,7 @@
 """ATA passthrough commands, device abstraction, and security feature set."""
 
 import ctypes
+import struct
 import sys
 from enum import IntEnum
 
@@ -418,3 +419,32 @@ class ATASecurityCommands:
         pw = ATASecurityCommands._pad_password(password)
         buf = ATASecurityCommands._build_security_cdb(0xF4, pw, identifier=identifier)
         return buf
+
+    @staticmethod
+    def parse_security_status(identify_data: bytes) -> dict:
+        """
+        Parse ATA Security Feature Set status from 512-byte IDENTIFY DEVICE data.
+
+        Word 128 (bytes 256-257, little-endian) contains the security status:
+          bit 0  Security feature set supported
+          bit 1  Security enabled
+          bit 2  Security locked
+          bit 3  Security frozen
+          bit 4  Security count expired
+          bit 5  Enhanced security erase supported
+          bit 8  Security level (0 = high, 1 = maximum)
+
+        Sources: ACS-4 Table 50 (IDENTIFY DEVICE Word 128)
+        """
+        if len(identify_data) < 258:
+            return {}
+        word128 = struct.unpack_from("<H", identify_data, 256)[0]
+        return {
+            "supported": bool(word128 & 0x0001),
+            "enabled": bool(word128 & 0x0002),
+            "locked": bool(word128 & 0x0004),
+            "frozen": bool(word128 & 0x0008),
+            "count_expired": bool(word128 & 0x0010),
+            "enhanced_erase_supported": bool(word128 & 0x0020),
+            "level": "maximum" if (word128 & 0x0100) else "high",
+        }
