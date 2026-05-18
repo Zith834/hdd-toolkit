@@ -10,7 +10,9 @@ from hdd_toolkit.ata.commands import (
     ATAError,
     ATASecurityCommands,
 )
+from hdd_toolkit.ata.hitachi_vsc import HitachiVSCClient
 from hdd_toolkit.ata.sat import SATLayer
+from hdd_toolkit.ata.seagate_f3_terminal import SeagateF3ROMMap, SeagateF3Terminal
 from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
 from hdd_toolkit.ata.security import ATAFrozenBypass, ATASecurityStatus
 from hdd_toolkit.ata.tcg_opal import TCGDiscovery0Parser
@@ -40,6 +42,10 @@ from hdd_toolkit.exploit.psoc_coldboot import PSoCColdBoot
 from hdd_toolkit.exploit.rtl9210_bridge import RTL9210Bridge
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
 from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
+from hdd_toolkit.exploit.wd_passport import (
+    WDPassportBridgeCmd,
+    WDPassportKeyRecovery,
+)
 from hdd_toolkit.exploit.write_cache_fault import (
     WriteCacheFaultModel,
     plan_power_loss_fault,
@@ -1872,6 +1878,139 @@ def cmd_vwc_fault_plan(args):
 
 
 # =============================================================================
+# Hitachi/HGST SA commands
+# =============================================================================
+
+
+def cmd_hitachi_sa_info(args):
+    hdr("Hitachi/HGST Service Area interface summary")
+    dev = object.__new__(type("_Stub", (), {"passthrough": lambda *a, **kw: b""}))
+    client = HitachiVSCClient.__new__(HitachiVSCClient)
+    client.dev = dev
+    caps = client.probe_capabilities()
+    info(f"Vendor           : {caps['vendor']}")
+    info(f"SA cmd log       : {caps['sa_cmd_log']}")
+    info(f"SA data log      : {caps['sa_data_log']}")
+    info(f"Feat SA read     : {caps['feat_sa_read']}")
+    info(f"Feat SA write    : {caps['feat_sa_write']}")
+    info(f"Feat diag mode   : {caps['feat_diag_mode']}")
+    info(f"Feat fw mode     : {caps['feat_fw_mode']}")
+    info("Known SA modules:")
+    for mod_id, mod_name in caps["known_modules"].items():
+        info(f"  0x{mod_id:02X}  {mod_name}")
+    info(caps["notes"])
+
+
+def cmd_hitachi_sa_read(args):
+    hdr(f"Hitachi SA read: drive={args.device}  module=0x{args.module:02X}")
+    with ATADevice(args.device) as dev:
+        client = HitachiVSCClient(dev)
+        data = client.read_module(args.module)
+    ok(f"Read {len(data)} bytes from module 0x{args.module:02X}")
+    if args.output:
+        Path(args.output).write_bytes(data)
+        ok(f"Saved to {args.output}")
+    else:
+        hexdump(data[:256])
+
+
+def cmd_hitachi_sa_write(args):
+    hdr(f"Hitachi SA write: drive={args.device}  module=0x{args.module:02X}")
+    data = Path(args.file).read_bytes()
+    warn(f"About to write {len(data)} bytes to SA module 0x{args.module:02X}")
+    with ATADevice(args.device) as dev:
+        client = HitachiVSCClient(dev)
+        client.write_module(args.module, data)
+    ok(f"Wrote {len(data)} bytes to module 0x{args.module:02X}")
+
+
+# =============================================================================
+# Seagate F3 terminal commands
+# =============================================================================
+
+
+def cmd_seagate_f3_cmd(args):
+    hdr("Seagate F3 terminal command builder")
+    cmd_map = {
+        "spin-up": SeagateF3Terminal.spin_up(),
+        "spin-down": SeagateF3Terminal.spin_down(),
+        "reset": SeagateF3Terminal.soft_reset(),
+        "identity": SeagateF3Terminal.print_identity(),
+        "p-list": SeagateF3Terminal.print_p_list(),
+        "g-list": SeagateF3Terminal.print_g_list(),
+        "clear-glist": SeagateF3Terminal.clear_g_list(),
+        "toggle-sata": SeagateF3Terminal.build_toggle_sata(),
+        "enter-terminal": SeagateF3Terminal.build_enter_terminal_mode(),
+    }
+    if args.cmd in cmd_map:
+        cmd_str = cmd_map[args.cmd]
+        ok(f"F3 terminal command: {cmd_str!r}")
+        if args.output:
+            Path(args.output).write_bytes(cmd_str.encode() + b"\r\n")
+            ok(f"Saved to {args.output}")
+    else:
+        err(f"Unknown command alias: {args.cmd}")
+
+
+def cmd_seagate_f3_sa_read(args):
+    hdr(f"Seagate F3 SA read command: module=0x{args.module:02X} track={args.track}")
+    cmd = SeagateF3Terminal.build_sa_read(module_id=args.module, track=args.track)
+    encoded = cmd.encode()
+    ok(f"F3 terminal command: {encoded!r}")
+    module_name = SeagateF3ROMMap.describe(args.module)
+    info(f"Module description: {module_name}")
+    if args.output:
+        Path(args.output).write_bytes(encoded.encode() + b"\r\n")
+        ok(f"Saved to {args.output}")
+
+
+def cmd_seagate_f3_head_select(args):
+    hdr(f"Seagate F3 head select: count={args.count} mask=0x{args.mask:02X}")
+    cmd = SeagateF3Terminal.set_active_heads(args.count, args.mask)
+    ok(f"F3 terminal command: {cmd!r}")
+
+
+# =============================================================================
+# WD My Passport commands
+# =============================================================================
+
+
+def cmd_wd_passport_probe(args):
+    hdr(f"WD My Passport probe: serial={args.serial}")
+    result = WDPassportKeyRecovery.probe(args.serial)
+    info(f"Serial             : {result['serial']}")
+    info(f"Wrapping key (hex) : {result['wrapping_key_hex']}")
+    if result["vulnerable"]:
+        warn(f"VULNERABLE: {result['affected_model_hint']}")
+    else:
+        ok(f"Not in known-vulnerable range: {result['affected_model_hint']}")
+    info(result["notes"])
+
+
+def cmd_wd_passport_keyrec(args):
+    hdr(f"WD My Passport offline DEK recovery: serial={args.serial}")
+    warn("This operation decrypts the drive encryption key.")
+    encrypted_dek = Path(args.dek_file).read_bytes()
+    if len(encrypted_dek) < 16:
+        err(f"DEK file too short ({len(encrypted_dek)} bytes, need >= 16)")
+        return
+    dek = WDPassportKeyRecovery.recover_dek(encrypted_dek, args.serial)
+    ok(f"Recovered DEK: {dek.hex()}")
+    if args.output:
+        Path(args.output).write_bytes(dek)
+        ok(f"DEK saved to {args.output}")
+
+
+def cmd_wd_passport_status_cdb(args):
+    hdr("WD My Passport: build GET_SEC_STATUS CDB (0xD8/0x00)")
+    cdb = WDPassportBridgeCmd.build_get_security_status_cdb()
+    ok(f"CDB (hex): {cdb.hex()}")
+    if args.output:
+        Path(args.output).write_bytes(cdb)
+        ok(f"Saved to {args.output}")
+
+
+# =============================================================================
 # Argument parser
 # =============================================================================
 
@@ -2833,6 +2972,111 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drive sustained write rate in MiB/s (default 100)",
     )
     sp.set_defaults(func=cmd_vwc_fault_plan)
+
+    # == Hitachi/HGST SA commands ==============================================
+    sp = sub.add_parser(
+        "hitachi-sa-info",
+        help="Print Hitachi/HGST Service Area VSC interface capability summary",
+    )
+    sp.set_defaults(func=cmd_hitachi_sa_info)
+
+    sp = sub.add_parser(
+        "hitachi-sa-read",
+        help="Read a Hitachi/HGST SA module via ATA SMART vendor commands",
+    )
+    sp.add_argument("device", help="Drive path, e.g. /dev/sdb")
+    sp.add_argument(
+        "--module",
+        type=lambda x: int(x, 0),
+        required=True,
+        help="SA module ID (hex), e.g. 0x00 for BOOT_CODE",
+    )
+    sp.add_argument("-o", "--output", help="Save module data to file")
+    sp.set_defaults(func=cmd_hitachi_sa_read)
+
+    sp = sub.add_parser(
+        "hitachi-sa-write",
+        help="Write a Hitachi/HGST SA module via ATA SMART vendor commands",
+    )
+    sp.add_argument("device", help="Drive path, e.g. /dev/sdb")
+    sp.add_argument(
+        "--module",
+        type=lambda x: int(x, 0),
+        required=True,
+        help="SA module ID (hex), e.g. 0x03 for G_LIST",
+    )
+    sp.add_argument("file", help="Binary file to write into the module")
+    sp.set_defaults(func=cmd_hitachi_sa_write)
+
+    # == Seagate F3 terminal commands =========================================
+    sp = sub.add_parser(
+        "seagate-f3-cmd",
+        help="Build a Seagate F3 UART terminal command string",
+    )
+    sp.add_argument(
+        "cmd",
+        choices=[
+            "spin-up", "spin-down", "reset", "identity",
+            "p-list", "g-list", "clear-glist", "toggle-sata", "enter-terminal",
+        ],
+        help="F3 command alias",
+    )
+    sp.add_argument("-o", "--output", help="Write command bytes (+ CRLF) to file")
+    sp.set_defaults(func=cmd_seagate_f3_cmd)
+
+    sp = sub.add_parser(
+        "seagate-f3-sa-read",
+        help="Build a Seagate F3 SA read command string (i4 family)",
+    )
+    sp.add_argument(
+        "--module",
+        type=lambda x: int(x, 0),
+        required=True,
+        help="SA module ID (hex), e.g. 0x34 for CONGEN_XML",
+    )
+    sp.add_argument("--track", type=int, default=1, help="SA track number (default 1)")
+    sp.add_argument("-o", "--output", help="Write command bytes to file")
+    sp.set_defaults(func=cmd_seagate_f3_sa_read)
+
+    sp = sub.add_parser(
+        "seagate-f3-head-select",
+        help="Build a Seagate F3 head-select command (N command, for data recovery)",
+    )
+    sp.add_argument("--count", type=int, required=True, help="Number of heads to activate")
+    sp.add_argument(
+        "--mask",
+        type=lambda x: int(x, 0),
+        default=0xFF,
+        help="Head enable bitmask (hex, default 0xFF = all)",
+    )
+    sp.set_defaults(func=cmd_seagate_f3_head_select)
+
+    # == WD My Passport commands ==============================================
+    sp = sub.add_parser(
+        "wd-passport-probe",
+        help="Offline risk assessment for WD My Passport drives (key derivation weakness)",
+    )
+    sp.add_argument(
+        "serial",
+        help="Drive serial number from SCSI INQUIRY (e.g. WX21A12B3456C7)",
+    )
+    sp.set_defaults(func=cmd_wd_passport_probe)
+
+    sp = sub.add_parser(
+        "wd-passport-keyrec",
+        help="Recover WD My Passport DEK offline using SMART serial + static salt",
+    )
+    sp.add_argument("serial", help="Drive serial number")
+    sp.add_argument("dek_file", help="32-byte encrypted DEK read from SMART log 0xA0")
+    sp.add_argument("-o", "--output", help="Save recovered DEK bytes to file")
+    sp.set_defaults(func=cmd_wd_passport_keyrec)
+
+    sp = sub.add_parser(
+        "wd-passport-status-cdb",
+        help="Build WD My Passport GET_SEC_STATUS CDB (opcode 0xD8/0x00)",
+    )
+    sp.add_argument("-o", "--output", help="Save 10-byte CDB to file")
+    sp.set_defaults(func=cmd_wd_passport_status_cdb)
 
     return p
 

@@ -9,7 +9,15 @@ from hdd_toolkit.ata.commands import (
     ATAError,
     ATASecurityCommands,
 )
+from hdd_toolkit.ata.hitachi_vsc import HitachiSAModule, HitachiVSCClient
 from hdd_toolkit.ata.sat import SATCmd, SATLayer
+from hdd_toolkit.ata.seagate_f3_terminal import (
+    F3Level,
+    F3SAReadCmd,
+    SeagateF3ROMMap,
+    SeagateF3Terminal,
+    build_sa_sector_descriptor,
+)
 from hdd_toolkit.ata.seagate_vsc import SeagateF3SCTClient, SeagateSAModule
 from hdd_toolkit.ata.security import ATAFrozenBypass, ATASecurityAccess, ATASecurityStatus
 from hdd_toolkit.ata.tcg_opal import (
@@ -52,6 +60,12 @@ from hdd_toolkit.exploit.psoc_coldboot import ColdBootResult, I2CDiff, PSoCColdB
 from hdd_toolkit.exploit.rtl9210_bridge import RTL9210Bridge, RTL9210FirmwareInfo
 from hdd_toolkit.exploit.service_area import ServiceArea, dump_all_overlays
 from hdd_toolkit.exploit.spare_sector_forensics import SpareSectorForensics
+from hdd_toolkit.exploit.wd_passport import (
+    WDPassportBridgeCmd,
+    WDPassportKeyRecovery,
+    WDPassportSecStatus,
+    analyse_passport,
+)
 from hdd_toolkit.exploit.write_cache_fault import (
     PowerLossFaultPlan,
     VWCState,
@@ -134,6 +148,8 @@ __all__ = [
     "ATASecurityCommands",
     "ATASecurityStatus",
     "ColdBootResult",
+    "F3Level",
+    "F3SAReadCmd",
     "FirmwareDetection",
     "FirmwareIdentitySpoofDetector",
     "FirmwarePatch",
@@ -143,6 +159,8 @@ __all__ = [
     "HMBAttackModel",
     "HMBDescriptor",
     "HPADCOAccess",
+    "HitachiSAModule",
+    "HitachiVSCClient",
     "HotPatchConfig",
     "I2CDiff",
     "ISSPEngine",
@@ -184,7 +202,9 @@ __all__ = [
     "SamsungSafeUARTClient",
     "SamsungSection",
     "SanDiskNVMeVSC",
+    "SeagateF3ROMMap",
     "SeagateF3SCTClient",
+    "SeagateF3Terminal",
     "SeagateFWLoader",
     "SeagateLODSection",
     "SeagateSAModule",
@@ -203,6 +223,9 @@ __all__ = [
     "VWCState",
     "VWCStatus",
     "WDFirmwareParser",
+    "WDPassportBridgeCmd",
+    "WDPassportKeyRecovery",
+    "WDPassportSecStatus",
     "WDSection",
     "WDVSCClient",
     "WriteCacheFaultModel",
@@ -212,6 +235,7 @@ __all__ = [
     "_bytes_to_asm",
     "_c",
     "_hex_dump",
+    "analyse_passport",
     "assemble_thumb",
     "benchmark_reads",
     "build_delay_hook",
@@ -225,6 +249,7 @@ __all__ = [
     "build_read_capacity_10_cdb",
     "build_read_capacity_16_cdb",
     "build_receive_diagnostic_cdb",
+    "build_sa_sector_descriptor",
     "deploy_hot_patch",
     "diff_firmware",
     "dump_all_overlays",
