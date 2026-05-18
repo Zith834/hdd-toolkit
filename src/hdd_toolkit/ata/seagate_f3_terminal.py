@@ -26,7 +26,7 @@ class F3Level(IntEnum):
     LEVEL_T = ord("T")
 
 
-# F3 terminal command strings (ASCII, sent over UART, terminated by \\r\\n)
+# F3 terminal command strings (ASCII, sent over UART, terminated by CR LF)
 F3_SPIN_UP = "U"
 F3_SPIN_DOWN = "Z"
 F3_SOFT_RESET = "R"
