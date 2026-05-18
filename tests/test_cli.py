@@ -61,6 +61,9 @@ def test_parser_has_all_commands():
         "rtl9210-read-spi", "rtl9210-inject-sanitize",
         "ata-master-pw-oracle", "ata-master-pw-detect",
         "vwc-analyse", "vwc-disable-cmd", "vwc-fault-plan",
+        "hitachi-sa-info", "hitachi-sa-read", "hitachi-sa-write",
+        "seagate-f3-cmd", "seagate-f3-sa-read", "seagate-f3-head-select",
+        "wd-passport-probe", "wd-passport-keyrec", "wd-passport-status-cdb",
     }
     missing = expected - seen
     extra = seen - expected
