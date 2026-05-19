@@ -154,6 +154,7 @@ class MaskRomBootMenu:
         self.console = console
 
     def enter_boot_menu(self) -> bool:
+        """Send the boot-break sequence and return True when menu prompt is observed."""
         self.console.open()
         self.console._ser.write(self.BOOT_MENU_BREAK)
         if hasattr(self.console._ser, "flush"):
@@ -173,6 +174,7 @@ class MaskRomBootMenu:
         return True
 
     def inject_gdb_stub(self, stub_bytes: bytes, load_addr: int) -> bool:
+        """Write stub bytes to SRAM, set PC to stub entry, and report success."""
         if len(stub_bytes) > self.STUB_SIZE_BYTES:
             warn("Stub size exceeds expected 3.4kB payload")
         if not self.write_memory(load_addr, stub_bytes):
@@ -250,6 +252,7 @@ class GdbStub:
         return regs
 
     def set_breakpoint(self, addr: int) -> bool:
+        """Install a software breakpoint at address `addr`, saving original instruction."""
         original = self.read_memory(addr, 4)
         if len(original) != 4:
             return False

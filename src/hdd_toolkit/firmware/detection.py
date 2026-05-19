@@ -55,6 +55,7 @@ class FirmwareDetection:
 
     # Known-good firmware hash database (model -> hash)
     KNOWN_GOOD_DB: ClassVar[dict[str, str]] = {}
+    CACHE_PROBE_MAX_RANDOM_DELAY_S: ClassVar[float] = 0.05
 
     @staticmethod
     def current_draw_anomaly(measured_ma: float, baseline_ma: float | None = None) -> dict:
@@ -314,7 +315,7 @@ class FirmwareDetection:
         Detect DEB-style replacement by comparing cache copy vs direct disk read.
         """
         if randomize_timing:
-            time.sleep(random.uniform(0.0, 0.05))
+            time.sleep(random.uniform(0.0, FirmwareDetection.CACHE_PROBE_MAX_RANDOM_DELAY_S))
 
         disk_data = disk_read_fn(lba)
         cache_hash = hashlib.sha256(cached_data).hexdigest()

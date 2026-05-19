@@ -22,6 +22,7 @@ class WriteHookPoint:
     intercept_mode: str
 
     def trampoline_bytes(self, arch: str = "arm966") -> bytes:
+        """Build a Thumb trampoline that dispatches to the hook payload and returns."""
         if arch != "arm966":
             raise ValueError("only arm966 is supported")
         if not self.is_valid():
@@ -71,6 +72,7 @@ class FirmwareOverlayLoader:
         return self.overlay_table.get(overlay_id)
 
     def hook_overlay_loader(self, loader_fn_addr: int, stub_addr: int) -> bytes:
+        """Encode an ARM branch patch that redirects loader execution to a stub."""
         if loader_fn_addr % 4 != 0 or stub_addr % 4 != 0:
             raise ValueError("addresses must be word aligned")
         branch_offset = (stub_addr - loader_fn_addr - 8) >> 2
