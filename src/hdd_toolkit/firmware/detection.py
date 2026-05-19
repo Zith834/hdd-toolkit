@@ -1,5 +1,8 @@
 import hashlib
+import random
 import struct
+import time
+from collections.abc import Callable
 from typing import ClassVar
 
 from hdd_toolkit.firmware.patcher import FirmwarePatcher
@@ -52,6 +55,7 @@ class FirmwareDetection:
 
     # Known-good firmware hash database (model -> hash)
     KNOWN_GOOD_DB: ClassVar[dict[str, str]] = {}
+    CACHE_PROBE_MAX_RANDOM_DELAY_S: ClassVar[float] = 0.05
 
     @staticmethod
     def current_draw_anomaly(measured_ma: float, baseline_ma: float | None = None) -> dict:
@@ -299,3 +303,64 @@ class FirmwareDetection:
             "modified" if flags else "no_detection_possible" if len(data) == 0 else "clean"
         )
         return report
+
+    @staticmethod
+    def page_cache_integrity_probe(
+        lba: int,
+        cached_data: bytes,
+        disk_read_fn: Callable[[int], bytes],
+        randomize_timing: bool = True,
+    ) -> dict:
+        """
+        Detect DEB-style replacement by comparing cache copy vs direct disk read.
+        """
+        if randomize_timing:
+            time.sleep(random.uniform(0.0, FirmwareDetection.CACHE_PROBE_MAX_RANDOM_DELAY_S))
+
+        disk_data = disk_read_fn(lba)
+        cache_hash = hashlib.sha256(cached_data).hexdigest()
+        disk_hash = hashlib.sha256(disk_data).hexdigest()
+        cache_matches_disk = cached_data == disk_data
+        deb_suspected = not cache_matches_disk
+
+        return {
+            "lba": lba,
+            "cache_matches_disk": cache_matches_disk,
+            "deb_suspected": deb_suspected,
+            "cache_hash": cache_hash,
+            "disk_hash": disk_hash,
+            "timing_randomized": randomize_timing,
+            "confidence": 1.0 if deb_suspected else 0.0,
+        }
+
+    @staticmethod
+    def bootloader_chain_verify(
+        mask_rom_hash: str,
+        second_bootloader: bytes,
+        third_bootloader: bytes,
+        known_good_hashes: dict[str, str],
+    ) -> dict:
+        """
+        Verify boot chain stages anchored in mask ROM root of trust.
+        """
+        second_hash = hashlib.sha256(second_bootloader).hexdigest()
+        third_hash = hashlib.sha256(third_bootloader).hexdigest()
+        second_ok = second_hash == known_good_hashes.get("second_bootloader")
+        third_ok = third_hash == known_good_hashes.get("third_bootloader")
+
+        expected_mask_rom = known_good_hashes.get("mask_rom")
+        mask_rom_ok = expected_mask_rom is None or mask_rom_hash == expected_mask_rom
+
+        return {
+            "mask_rom_hash": mask_rom_hash,
+            "second_bootloader_hash": second_hash,
+            "second_bootloader_ok": second_ok,
+            "third_bootloader_hash": third_hash,
+            "third_bootloader_ok": third_ok,
+            "chain_intact": mask_rom_ok and second_ok and third_ok,
+            "root_of_trust": "mask_rom",
+            "attack_surface": (
+                "Mask ROM is hardware-rooted; second-stage flash and third-stage "
+                "service-area firmware remain primary mutable targets."
+            ),
+        }
